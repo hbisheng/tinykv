@@ -11,7 +11,7 @@ configured separately. Writes can be made atomic across column families, which c
 
 engine_util includes the following packages:
 
-* engines: a data structure for keeping engines required by unistore.
+* engines: a data structure for keeping engines required by tinykv.
 * write_batch: code to batch writes into a single, atomic 'transaction'.
 * cf_iterator: code to iterate over a whole column family in badger.
 */
