@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"sort"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -214,11 +215,51 @@ func newRaft(c *Config) *Raft {
 	}
 }
 
+func (r *Raft) broadcastAppend() error {
+	// no need to broadcast when there's only one node.
+	if len(r.Prs) == 1 {
+		r.maybeAdvanceCommit()
+		return nil
+	}
+
+	for peerID := range r.Prs {
+		if peerID == r.id {
+			continue
+		}
+		r.sendAppend(peerID)
+	}
+	return nil
+}
+
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	return false
+	entries := []*pb.Entry{}
+	for i := r.Prs[to].Next; int(i) < len(r.RaftLog.entries); i++ {
+		entries = append(entries, &r.RaftLog.entries[i])
+	}
+
+	if len(entries) == 0 {
+		return false
+	}
+
+	fmt.Printf("+++++[id=%d][term=%d] sending %d the following entries:\n", r.id, r.Term, to)
+
+	for i, entry := range entries {
+		fmt.Printf("+++++[id=%d][term=%d] \tentries[%d] %+v\n", r.id, r.Term, i, entry)
+	}
+
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgAppend,
+		To:      to,
+		From:    r.id,
+		Term:    r.Term,
+		LogTerm: r.Term,
+		Index:   entries[0].Index - 1, // This might be -1
+		Entries: entries,
+	})
+	return true
 }
 
 func (r *Raft) broadcastHeartbeat() {
@@ -332,11 +373,19 @@ func (r *Raft) becomeLeader() {
 	// NOTE: Leader should propose a noop entry on its term
 
 	// r.Term += 1
-	fmt.Printf("+++++[id=%d] become leader at term %d\n", r.id, r.Term)
+	fmt.Printf("+++++[id=%d] become leader at term %d, proposing noop entry\n", r.id, r.Term)
 
 	r.State = StateLeader
 	r.heartbeatElapsed = 0
 	r.electionElapsed = generateRandomizedElectionTimeout(r.electionTimeout)
+
+	// Propose no-op entry.
+	r.Step(pb.Message{
+		MsgType: pb.MessageType_MsgPropose,
+		To:      r.id,
+		From:    r.id,
+		Entries: []*pb.Entry{{Data: nil}},
+	})
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -348,7 +397,9 @@ func (r *Raft) Step(m pb.Message) error {
 		fmt.Printf("+++++[id=%d][term=%d] incoming term %d from %d is higher\n", r.id, r.Term, m.Term, m.From)
 		r.becomeFollower(m.Term, None)
 	} else if incomingTerm < r.Term {
-		if m.MsgType == pb.MessageType_MsgHup || m.MsgType == pb.MessageType_MsgBeat {
+		if m.MsgType == pb.MessageType_MsgHup ||
+			m.MsgType == pb.MessageType_MsgBeat ||
+			m.MsgType == pb.MessageType_MsgPropose {
 			// let local messages pass
 		} else {
 			// ignore messages with smaller terms
@@ -381,6 +432,7 @@ func (r *Raft) Step(m pb.Message) error {
 
 	switch r.State {
 	case StateFollower:
+		return r.stepFollower(m)
 	case StateCandidate:
 		return r.stepCandidate(m)
 	case StateLeader:
@@ -406,22 +458,95 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 	return nil
 }
 
+func (r *Raft) stepFollower(m pb.Message) error {
+	switch m.MsgType {
+	case pb.MessageType_MsgAppend:
+		r.handleAppendEntries(m)
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
+	}
+	return nil
+}
+
 func (r *Raft) stepLeader(m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgBeat:
 		r.broadcastHeartbeat()
+	case pb.MessageType_MsgPropose:
+		fmt.Printf(
+			"+++++[id=%d][term=%d] leader receives propose: idx=%d\n",
+			r.id, r.Term, m.Index)
+		for i, e := range m.Entries {
+			entryStr := fmt.Sprintf("%+v", e)
+			if e.Data == nil {
+				entryStr = "(nil data)"
+			}
+			fmt.Printf(
+				"+++++[id=%d][term=%d] \tentries[%d]: %s\n",
+				r.id, r.Term, i, entryStr)
+		}
+
+		r.RaftLog.appendUnstableEntries(r.Term, m.Entries)
+		r.broadcastAppend()
+	case pb.MessageType_MsgAppendResponse:
+		fmt.Printf("+++++[id=%d][term=%d] receive append response from %d, index=%d\n", r.id, r.Term, m.From, m.Index)
+		// Update the progress of the follower
+		if r.Prs[m.From].Match < m.Index {
+			r.Prs[m.From].Match = m.Index
+		}
+		if r.Prs[m.From].Next < r.Prs[m.From].Match+1 {
+			r.Prs[m.From].Next = r.Prs[m.From].Match + 1
+		}
+		r.maybeAdvanceCommit()
 	}
 	return nil
+}
+
+func (r *Raft) maybeAdvanceCommit() {
+	indexes := []uint64{}
+	for id, pr := range r.Prs {
+		if id == r.id {
+			indexes = append(indexes, uint64(len(r.RaftLog.entries)-1))
+		} else {
+			indexes = append(indexes, pr.Match)
+		}
+	}
+
+	sort.Slice(indexes, func(i, j int) bool { return indexes[i] > indexes[j] }) // descending
+	majorityPos := len(indexes) / 2
+	canCommit := uint64(indexes[majorityPos])
+	if canCommit > r.RaftLog.committed {
+		fmt.Printf(
+			"+++++[id=%d][term=%d] commit %d -> %d\n",
+			r.id, r.Term, r.RaftLog.committed, canCommit)
+
+		r.RaftLog.committed = canCommit
+		// broadcast commit message
+	}
 }
 
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
+	fmt.Printf(
+		"+++++[id=%d][term=%d] follower receives Append: idx=%d, entries: len %d, %v\n",
+		r.id, r.Term, m.Index, len(m.Entries), m.Entries)
+
+	r.RaftLog.appendUnstableEntries(r.Term, m.Entries)
+	// reply accept without doing anything
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		To:      m.From,
+		From:    r.id,
+		Term:    r.Term,
+		Index:   m.Entries[len(m.Entries)-1].Index,
+	})
 }
 
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
+	panic("handleHeartbeat not implemented yet")
 }
 
 // handleSnapshot handle Snapshot RPC request

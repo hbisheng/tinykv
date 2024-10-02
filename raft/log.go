@@ -14,13 +14,17 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	"fmt"
+
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
-//  snapshot/first.....applied....committed....stabled.....last
-//  --------|------------------------------------------------|
-//                            log entries
+//	snapshot/first.....applied....committed....stabled.....last
+//	--------|------------------------------------------------|
+//	                          log entries
 //
 // for simplify the RaftLog implement should manage all log entries
 // that not truncated
@@ -47,16 +51,55 @@ type RaftLog struct {
 
 	// the incoming unstable snapshot, if any.
 	// (Used in 2C)
-	pendingSnapshot *pb.Snapshot
+	// pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
+	// unstableEntries []pb.Entry
 }
 
 // newLog returns log using the given storage. It recovers the log
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
-	return nil
+	firstIndex, err := storage.FirstIndex()
+	if err != nil {
+		panic("storage.FirstIndex() " + err.Error())
+	}
+	lastIndex, err := storage.LastIndex()
+	if err != nil {
+		panic("storage.LastIndex() " + err.Error())
+	}
+	entries := []pb.Entry{}
+	if firstIndex < lastIndex+1 {
+		// padding entries with dummy entries
+		for i := 0; uint64(i) < firstIndex; i++ {
+			entries = append(entries, pb.Entry{}) // dummy entry
+		}
+
+		ee, err := storage.Entries(firstIndex, lastIndex+1)
+		if err != nil {
+			panic("storage.Entries() " + err.Error())
+		}
+		entries = append(entries, ee...)
+	}
+
+	if len(entries) > 0 && int(entries[len(entries)-1].Index) != len(entries)-1 {
+		panic("unexpected init")
+	}
+
+	// hardState, confState, err := storage.InitialState()
+	// if err != nil {
+	// 	panic("storage.InitialState() " + err.Error())
+	// }
+
+	// fmt.Printf("+++++newLog hardState: %+v, confState: %+v, entries: %+v\n",
+	// 	hardState, confState, entries)
+
+	for i, e := range entries {
+		fmt.Printf("+++++init entries[%d] %+v\n", i, e)
+	}
+
+	return &RaftLog{storage: storage, entries: entries}
 }
 
 // We need to compact the log entries in some point of time like
@@ -74,21 +117,57 @@ func (l *RaftLog) allEntries() []pb.Entry {
 	return nil
 }
 
+func (l *RaftLog) appendUnstableEntries(term uint64, entries []*pb.Entry) {
+	if len(entries) == 0 {
+		return
+	}
+
+	// Don't do any index check yet
+	// if len(l.entries) != int(entries[0].Index) {
+	// 	panic(fmt.Sprintf("len(l.entries) != entries[0].Index, %d != %d", len(l.entries), int(entries[0].Index)))
+	// }
+	// lastIndex, err := l.storage.LastIndex()
+	// if err != nil {
+	// 	fmt.Printf("+++++ warning, error getting l.storage.LastIndex()")
+	// }
+	for _, e := range entries {
+		// Make sure related fields are set
+		newEntry := pb.Entry{
+			EntryType: e.EntryType,
+			Term:      term,
+			Index:     uint64(len(l.entries)),
+			Data:      e.Data,
+		}
+		l.entries = append(l.entries, newEntry)
+	}
+}
+
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	res := []pb.Entry{}
+	for i := int(l.stabled + 1); i < len(l.entries); i++ {
+		res = append(res, l.entries[i])
+	}
+	return res
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return nil
+	res := []pb.Entry{}
+	for i := l.applied + 1; i < uint64(len(l.entries)); i++ {
+		res = append(res, l.entries[i])
+	}
+	return res
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
+	if len(l.entries)-1 >= 0 {
+		return uint64(len(l.entries) - 1)
+	}
 	return 0
 }
 
