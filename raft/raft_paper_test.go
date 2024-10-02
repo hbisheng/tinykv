@@ -482,10 +482,10 @@ func TestLeaderAcknowledgeCommit2AB(t *testing.T) {
 // Reference: section 5.3
 func TestLeaderCommitPrecedingEntries2AB(t *testing.T) {
 	tests := [][]pb.Entry{
-		// {},
+		{},
 		{{Term: 2, Index: 1}},
-		// {{Term: 1, Index: 1}, {Term: 2, Index: 2}},
-		// {{Term: 1, Index: 1}},
+		{{Term: 1, Index: 1}, {Term: 2, Index: 2}},
+		{{Term: 1, Index: 1}},
 	}
 	for i, tt := range tests {
 		storage := NewMemoryStorage()

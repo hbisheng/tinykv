@@ -15,6 +15,7 @@
 package raft
 
 import (
+	"errors"
 	"fmt"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -69,12 +70,12 @@ func newLog(storage Storage) *RaftLog {
 	if err != nil {
 		panic("storage.LastIndex() " + err.Error())
 	}
-	entries := []pb.Entry{}
+	entries := []pb.Entry{{Data: []byte("dummy entry")}}
 	if firstIndex < lastIndex+1 {
-		// padding entries with dummy entries
-		for i := 0; uint64(i) < firstIndex; i++ {
-			entries = append(entries, pb.Entry{}) // dummy entry
-		}
+		// // padding entries with dummy entries
+		// for i := 0; uint64(i) < firstIndex; i++ {
+		// 	entries = append(entries, pb.Entry{}) // dummy entry at position 0.
+		// }
 
 		ee, err := storage.Entries(firstIndex, lastIndex+1)
 		if err != nil {
@@ -99,7 +100,11 @@ func newLog(storage Storage) *RaftLog {
 		fmt.Printf("+++++init entries[%d] %+v\n", i, e)
 	}
 
-	return &RaftLog{storage: storage, entries: entries}
+	return &RaftLog{
+		storage: storage,
+		entries: entries,
+		stabled: uint64(len(entries) - 1),
+	}
 }
 
 // We need to compact the log entries in some point of time like
@@ -114,15 +119,12 @@ func (l *RaftLog) maybeCompact() {
 // note, this is one of the test stub functions you need to implement.
 func (l *RaftLog) allEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	return l.entries[1:]
 }
 
-func (l *RaftLog) appendUnstableEntries(term uint64, entries []*pb.Entry) {
-	if len(entries) == 0 {
-		return
-	}
+// term uint64, entries []*pb.Entry
 
-	// Don't do any index check yet
+func (l *RaftLog) appendEntries(m pb.Message) {
 	// if len(l.entries) != int(entries[0].Index) {
 	// 	panic(fmt.Sprintf("len(l.entries) != entries[0].Index, %d != %d", len(l.entries), int(entries[0].Index)))
 	// }
@@ -130,15 +132,53 @@ func (l *RaftLog) appendUnstableEntries(term uint64, entries []*pb.Entry) {
 	// if err != nil {
 	// 	fmt.Printf("+++++ warning, error getting l.storage.LastIndex()")
 	// }
-	for _, e := range entries {
+
+	// append empty entry on leader but not on a follower.
+	if len(m.Entries) == 0 && m.MsgType == pb.MessageType_MsgPropose {
+		if m.Index+1 == uint64(len(l.entries)) {
+			newEntry := pb.Entry{
+				EntryType: pb.EntryType_EntryNormal,
+				Term:      m.Term,
+				Index:     uint64(len(l.entries)),
+				Data:      nil,
+			}
+			l.entries = append(l.entries, newEntry)
+		}
+		return
+	}
+
+	for _, e := range m.Entries {
 		// Make sure related fields are set
+		index := e.Index
+		if index == 0 {
+			index = uint64(len(l.entries))
+		}
+
 		newEntry := pb.Entry{
 			EntryType: e.EntryType,
-			Term:      term,
-			Index:     uint64(len(l.entries)),
+			Term:      e.Term,
+			Index:     index, // e.Index, // uint64(len(l.entries)),
 			Data:      e.Data,
 		}
-		l.entries = append(l.entries, newEntry)
+
+		if e.Index != 0 && e.Index < uint64(len(l.entries)) {
+			// Consider duplicate entries.
+			fmt.Printf(
+				"+++++overwriting existing entry, e.Index=%d, len(l.entries)=%d,\n",
+				e.Index, len(l.entries))
+
+			if e.Term != l.entries[e.Index].Term {
+				// Override
+				l.entries[e.Index] = newEntry
+				// Truncate
+				l.entries = l.entries[:e.Index+1]
+				if l.stabled >= e.Index {
+					l.stabled = e.Index - 1
+				}
+			}
+		} else {
+			l.entries = append(l.entries, newEntry)
+		}
 	}
 }
 
@@ -156,7 +196,7 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
 	res := []pb.Entry{}
-	for i := l.applied + 1; i < uint64(len(l.entries)); i++ {
+	for i := l.applied + 1; i <= l.committed; i++ {
 		res = append(res, l.entries[i])
 	}
 	return res
@@ -173,6 +213,8 @@ func (l *RaftLog) LastIndex() uint64 {
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
-	// Your Code Here (2A).
-	return 0, nil
+	if i < uint64(len(l.entries)) {
+		return l.entries[i].Term, nil
+	}
+	return 0, errors.New("no entry")
 }
