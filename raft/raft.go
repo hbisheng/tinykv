@@ -161,7 +161,7 @@ type Raft struct {
 	// (Used in 3A conf change)
 	PendingConfIndex uint64
 
-	applied uint64
+	// applied uint64
 }
 
 // newRaft return a raft peer with the given config
@@ -182,6 +182,7 @@ func newRaft(c *Config) *Raft {
 
 	raftLog := newLog(c.Storage)
 	raftLog.committed = hardState.Commit
+	raftLog.applied = c.Applied
 	fmt.Printf("+++++[id=%d] new raft node created\n", c.ID)
 	// Your Code Here (2A).
 	return &Raft{
@@ -202,7 +203,7 @@ func newRaft(c *Config) *Raft {
 		// votes map[uint64]bool
 
 		// msgs need to send
-		msgs: []pb.Message{},
+		msgs: nil, // []pb.Message{},
 
 		// // the leader id
 		// Lead uint64
@@ -218,7 +219,7 @@ func newRaft(c *Config) *Raft {
 		// // Number of ticks since it reached last electionTimeout or received a
 		// // valid message from current leader when it is a follower.
 		// electionElapsed int
-		applied: c.Applied,
+		// applied: c.Applied,
 	}
 }
 
