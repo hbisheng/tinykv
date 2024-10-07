@@ -268,9 +268,12 @@ func (c *Cluster) LeaderOfRegion(regionID uint64) *metapb.Peer {
 
 func (c *Cluster) GetRegion(key []byte) *metapb.Region {
 	for i := 0; i < 100; i++ {
-		region, _, _ := c.schedulerClient.GetRegion(context.TODO(), key)
+		region, _, err := c.schedulerClient.GetRegion(context.TODO(), key)
 		if region != nil {
 			return region
+		}
+		if err != nil {
+			fmt.Printf("+++++ GetRegion err: %v, attempt %d\n", err.Error(), i)
 		}
 		// We may meet range gap after split, so here we will
 		// retry to get the region again.

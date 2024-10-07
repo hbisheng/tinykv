@@ -80,6 +80,7 @@ func NewRawNode(config *Config) (*RawNode, error) {
 
 // Tick advances the internal logical clock by a single tick.
 func (rn *RawNode) Tick() {
+	// fmt.Printf("+++++[id=%d][term=%d] Tick() is called\n", rn.Raft.id, rn.Raft.Term)
 	rn.Raft.tick()
 }
 
@@ -180,6 +181,8 @@ func (rn *RawNode) Advance(rd Ready) {
 		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
 	}
 
+	// Clear the messages that were sent
+	rn.Raft.msgs = nil
 }
 
 // GetProgress return the Progress of this node and its peers, if this

@@ -308,6 +308,40 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
+	// panic("(ps *PeerStorage) Append not implemented yet")
+	if len(entries) == 0 {
+		return nil
+	}
+
+	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+
+	var newLargestIndex uint64
+	for _, e := range entries {
+		logKey := meta.RaftLogKey(ps.region.Id, e.Index)
+		raftWB.SetCF(engine_util.CfDefault /* ? */, logKey, e.Data)
+		newLargestIndex = e.Index
+	}
+	oldLargestIndex := ps.raftState.LastIndex
+	if newLargestIndex < oldLargestIndex {
+		// Delete any larger entries
+		staleEntries, err := ps.Entries(newLargestIndex+1, oldLargestIndex+1)
+		if err != nil {
+			panic(
+				fmt.Sprintf(
+					"[%v]: err getting ps.Entries: %s, largestIndex: %d, ps.applyState: %v",
+					ps.Tag,
+					err.Error(), newLargestIndex, ps.applyState,
+				),
+			)
+		}
+		for _, e := range staleEntries {
+			raftWB.DeleteCF(
+				engine_util.CfDefault, /* ? */
+				meta.RaftLogKey(ps.region.Id, e.Index),
+			)
+		}
+	}
+
 	return nil
 }
 
@@ -331,6 +365,34 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
+
+	term := ready.HardState.Term
+	vote := ready.HardState.Vote
+	commit := ready.HardState.Commit
+	var toPrint string
+	if ready.HardState.Term != 0 {
+		toPrint += fmt.Sprintf("+++++[%s] SaveReadyState -> hard state in ready: term=%d, vote=%d, commit=%d\n", ps.Tag, term, vote, commit)
+		ps.raftState.HardState.Term = term
+		ps.raftState.HardState.Vote = vote
+		ps.raftState.HardState.Commit = commit
+	}
+
+	raftWB := &engine_util.WriteBatch{}
+	if len(ready.Entries) != 0 {
+		for _, e := range ready.Entries {
+			toPrint += fmt.Sprintf("+++++[%s] SaveReadyState -> entry to append %v\n", ps.Tag, e)
+		}
+		if err := ps.Append(ready.Entries, raftWB); err != nil {
+			panic("ps.Append err:" + err.Error())
+		}
+		ps.raftState.LastTerm = ready.Entries[len(ready.Entries)-1].Term
+		ps.raftState.LastIndex = ready.Entries[len(ready.Entries)-1].Index
+	}
+	for _, e := range ready.CommittedEntries {
+		toPrint += fmt.Sprintf("+++++[%s] SaveReadyState -> committed entry %v\n", ps.Tag, e)
+	}
+	fmt.Println(toPrint)
+	raftWB.MustWriteToDB(ps.Engines.Raft)
 	return nil, nil
 }
 

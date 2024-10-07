@@ -96,14 +96,14 @@ func newLog(storage Storage) *RaftLog {
 	// fmt.Printf("+++++newLog hardState: %+v, confState: %+v, entries: %+v\n",
 	// 	hardState, confState, entries)
 
-	for i, e := range entries {
-		fmt.Printf("+++++init entries[%d] %+v\n", i, e)
+	stabled := uint64(len(entries) - 1)
+	if stabled < lastIndex {
+		stabled = lastIndex
 	}
-
 	return &RaftLog{
 		storage: storage,
 		entries: entries,
-		stabled: uint64(len(entries) - 1),
+		stabled: stabled,
 	}
 }
 
@@ -147,6 +147,7 @@ func (l *RaftLog) appendEntries(m pb.Message) {
 		return
 	}
 
+	var toPrint string
 	for _, e := range m.Entries {
 		// Make sure related fields are set
 		index := e.Index
@@ -163,11 +164,11 @@ func (l *RaftLog) appendEntries(m pb.Message) {
 
 		if e.Index != 0 && e.Index < uint64(len(l.entries)) {
 			// Consider duplicate entries.
-			fmt.Printf(
-				"+++++overwriting existing entry, e.Index=%d, len(l.entries)=%d,\n",
-				e.Index, len(l.entries))
-
 			if e.Term != l.entries[e.Index].Term {
+				toPrint += fmt.Sprintf(
+					"+++++overwriting existing entry, e.Index=%d, len(l.entries)=%d, old:%v, new:%v\n",
+					e.Index, len(l.entries), l.entries[e.Index], newEntry)
+
 				// Override
 				l.entries[e.Index] = newEntry
 				// Truncate
@@ -180,6 +181,7 @@ func (l *RaftLog) appendEntries(m pb.Message) {
 			l.entries = append(l.entries, newEntry)
 		}
 	}
+	fmt.Println(toPrint)
 }
 
 // unstableEntries return all the unstable entries
