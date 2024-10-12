@@ -47,7 +47,6 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	}
 	// Your Code Here (2B).
 	hasReady := d.peer.RaftGroup.HasReady()
-	// fmt.Printf("+++++ [store_id=%d] has_ready: %v\n", d.peer.storeID(), hasReady)
 	if !hasReady {
 		return
 	}
@@ -59,57 +58,83 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		panic("SaveReadyState returned error: %s" + err.Error())
 	}
 
-	// Apply committed entries
-	kvWB := &engine_util.WriteBatch{}
-	proposalsToRespond := []*proposal{}
-	proposalReponses := []*raft_cmdpb.RaftCmdResponse{}
-	for _, e := range rd.CommittedEntries {
-		// find the proposal, apply it, and remove, respond to the client.
-		proposal := d.peer.popProposalByIndex(e.Index)
-		if proposal == nil {
-			continue
-		}
-
-		cmdRequest := new(raft_cmdpb.RaftCmdRequest)
-		err := proto.Unmarshal(e.Data, cmdRequest)
-		if err != nil {
-			panic(err.Error())
-		}
-
-		responses := []*raft_cmdpb.Response{}
-		// do the operation and return results.
-		for _, r := range cmdRequest.Requests {
-			if r.CmdType == raft_cmdpb.CmdType_Put {
-				kvWB.SetCF(r.Put.GetCf(), r.Put.GetKey(), r.Put.GetValue())
-				responses = append(responses, &raft_cmdpb.Response{
-					CmdType: r.CmdType,
-					Put:     &raft_cmdpb.PutResponse{},
-				})
-			} else if r.CmdType == raft_cmdpb.CmdType_Delete {
-				kvWB.DeleteCF(r.Put.GetCf(), r.Delete.GetKey())
-				responses = append(responses, &raft_cmdpb.Response{
-					CmdType: r.CmdType,
-					Delete:  &raft_cmdpb.DeleteResponse{},
-				})
-			} else {
-				panic("unexpected command type: " + r.CmdType.String())
+	if len(rd.CommittedEntries) > 0 {
+		var toPrint string
+		// Apply committed entries
+		kvWB := &engine_util.WriteBatch{}
+		proposalsToRespond := []*proposal{}
+		proposalReponses := []*raft_cmdpb.RaftCmdResponse{}
+		for _, e := range rd.CommittedEntries {
+			// find the proposal, apply it, and remove, respond to the client.
+			proposal := d.peer.popProposalByIndex(e.Index)
+			if proposal == nil {
+				continue
 			}
-		}
-		proposalsToRespond = append(proposalsToRespond, proposal)
-		proposalReponses = append(proposalReponses, &raft_cmdpb.RaftCmdResponse{
-			Header:    newCmdResp().Header,
-			Responses: responses,
-		})
-	}
 
-	// Update apply state and region state
-	regionLocalState := new(rspb.RegionLocalState)
-	regionLocalState.Region = d.peerStorage.region
-	kvWB.SetMeta(meta.RegionStateKey(d.peerStorage.region.GetId()), regionLocalState)
-	kvWB.SetMeta(meta.ApplyStateKey(d.peerStorage.region.GetId()), d.peerStorage.applyState)
-	kvWB.MustWriteToDB(d.ctx.engine.Kv)
-	for i := range proposalsToRespond {
-		proposalsToRespond[i].cb.Done(proposalReponses[i])
+			cmdRequest := new(raft_cmdpb.RaftCmdRequest)
+			err := proto.Unmarshal(e.Data, cmdRequest)
+			if err != nil {
+				panic(err.Error())
+			}
+
+			responses := []*raft_cmdpb.Response{}
+			// do the operation and return results.
+			for _, r := range cmdRequest.Requests {
+				if r.CmdType == raft_cmdpb.CmdType_Put {
+					kvWB.SetCF(r.Put.GetCf(), r.Put.GetKey(), r.Put.GetValue())
+					toPrint += fmt.Sprintf("+++++[id=%d] writing [cf=%v,key=%v,val=%v]\n", d.PeerId(), r.Put.GetCf(), r.Put.GetKey(), r.Put.GetValue())
+					responses = append(responses, &raft_cmdpb.Response{
+						CmdType: r.CmdType,
+						Put:     &raft_cmdpb.PutResponse{},
+					})
+				} else if r.CmdType == raft_cmdpb.CmdType_Delete {
+					kvWB.DeleteCF(r.Delete.GetCf(), r.Delete.GetKey())
+					toPrint += fmt.Sprintf("+++++[id=%d] deleting [cf=%v,key=%v]\n", d.PeerId(), r.Put.GetCf(), r.Put.GetKey())
+					responses = append(responses, &raft_cmdpb.Response{
+						CmdType: r.CmdType,
+						Delete:  &raft_cmdpb.DeleteResponse{},
+					})
+				} else if r.CmdType == raft_cmdpb.CmdType_Snap {
+					toPrint += fmt.Sprintf("+++++[id=%d] snapshot command, openning a new transaction! returning info %v \n", d.PeerId(), d.peerStorage.Region())
+					responses = append(responses, &raft_cmdpb.Response{
+						CmdType: r.CmdType,
+						Snap: &raft_cmdpb.SnapResponse{
+							Region: d.peerStorage.Region(),
+						},
+					})
+
+					proposal.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
+					// proposal.cb.Txn = d.ctx.engine.Raft.NewTransaction(false)
+				} else {
+					panic(fmt.Sprintf("unexpected command: %v", r))
+				}
+			}
+			proposalsToRespond = append(proposalsToRespond, proposal)
+			proposalReponses = append(proposalReponses, &raft_cmdpb.RaftCmdResponse{
+				Header:    newCmdResp().Header,
+				Responses: responses,
+			})
+		}
+
+		// Update the KVs and the apply/region at the same transaction
+		regionLocalState := new(rspb.RegionLocalState)
+		regionLocalState.State = rspb.PeerState_Normal
+		regionLocalState.Region = d.peerStorage.region
+		kvWB.SetMeta(meta.RegionStateKey(d.peerStorage.region.GetId()), regionLocalState)
+		toPrint += fmt.Sprintf("+++++[id=%d] persisting regionLocalState: %v\n", d.PeerId(), regionLocalState)
+
+		d.peerStorage.applyState.AppliedIndex = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+		kvWB.SetMeta(meta.ApplyStateKey(d.peerStorage.region.GetId()), d.peerStorage.applyState)
+		toPrint += fmt.Sprintf("+++++[id=%d] persisting applyState: %v\n", d.PeerId(), d.peerStorage.applyState)
+
+		kvWB.MustWriteToDB(d.ctx.engine.Kv)
+		toPrint += fmt.Sprintf("+++++[id=%d] finish writing to KV store\n", d.PeerId())
+
+		fmt.Println(toPrint)
+
+		for i := range proposalsToRespond {
+			proposalsToRespond[i].cb.Done(proposalReponses[i])
+		}
 	}
 
 	allPeers := d.peer.Region().GetPeers()
@@ -209,7 +234,8 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
-	fmt.Printf("+++++ receive propose command: %v, header: %v\n", msg, msg.Header)
+	fmt.Printf("====================> [id=%d] receive propose command, header: %v, requests: %v, admin_req: %v \n",
+		d.PeerId(), msg.Header, msg.Requests, msg.AdminRequest)
 
 	cmdRequestBytes, err := msg.Marshal()
 	if err != nil {

@@ -294,11 +294,14 @@ func (r *Raft) sendAppend(to uint64) bool {
 		return false
 	}
 
-	fmt.Printf("+++++[id=%d][term=%d] sending %d the following entries:\n", r.id, r.Term, to)
+	var toPrint string
+	toPrint += fmt.Sprintf("+++++[id=%d][term=%d] adding the following entries (index [%d, %d]) to outbound messages to %d:\n",
+		r.id, r.Term, entries[0].Index, entries[len(entries)-1].Index, to)
 
-	for i, entry := range entries {
-		fmt.Printf("+++++[id=%d][term=%d] \tentries[%d] %+v\n", r.id, r.Term, i, entry)
-	}
+	// for i, entry := range entries {
+	// 	toPrint += fmt.Sprintf("+++++[id=%d][term=%d] \tentries[%d], index: %d, data len: %d\n", r.id, r.Term, i, entry.Index, len(entry.Data))
+	// }
+	fmt.Print(toPrint)
 
 	r.msgs = append(r.msgs, pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
@@ -438,7 +441,7 @@ func (r *Raft) becomeLeader() {
 	// NOTE: Leader should propose a noop entry on its term
 
 	// r.Term += 1
-	fmt.Printf("+++++[id=%d] become leader at term %d, proposing noop entry\n", r.id, r.Term)
+	fmt.Printf("+++++[id=%d] BECOME LEADER at term %d, proposing noop entry <--------------\n", r.id, r.Term)
 
 	r.State = StateLeader
 	r.heartbeatElapsed = 0
@@ -459,7 +462,7 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	incomingTerm := m.Term
 	if incomingTerm > r.Term {
-		fmt.Printf("+++++[id=%d][term=%d] incoming term %d from %d is higher\n", r.id, r.Term, m.Term, m.From)
+		fmt.Printf("+++++[id=%d][term=%d] incoming term=%d from id=%d is higher\n", r.id, r.Term, m.Term, m.From)
 		r.becomeFollower(m.Term, None)
 	} else if incomingTerm < r.Term {
 		if m.MsgType == pb.MessageType_MsgHup ||
@@ -545,7 +548,7 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 			if result {
 				r.becomeLeader()
 			} else {
-				fmt.Printf("+++++[id=%d][term=%d] losing the election\n", r.id, r.Term)
+				fmt.Printf("+++++[id=%d][term=%d] losing the election, r.votes: %v\n", r.id, r.Term, r.votes)
 				r.becomeFollower(r.Term, None)
 			}
 		}
@@ -598,12 +601,12 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		r.broadcastHeartbeat()
 	case pb.MessageType_MsgPropose:
 		toPrint += fmt.Sprintf(
-			"+++++[id=%d][term=%d] leader receives propose: idx=%d\n",
-			r.id, r.Term, m.Index)
+			"+++++[id=%d][term=%d] leader receives propose: len(m.Entrie): %d, idx=%d <===============================\n",
+			r.id, r.Term, len(m.Entries), m.Index)
 		for i, e := range m.Entries {
 			entryStr := fmt.Sprintf("%+v", e)
 			if e.Data == nil {
-				entryStr = "(nil data)"
+				entryStr = "(noop entry)"
 			}
 			toPrint += fmt.Sprintf(
 				"+++++[id=%d][term=%d] \tincoming entries[%d]: %s\n",
@@ -624,29 +627,32 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1 // uint64(len(r.RaftLog.entries))
 
 		toPrint += fmt.Sprintf(
-			"+++++[id=%d][term=%d] post-propose latest entries:\n",
-			r.id, r.Term)
-		for i, e := range r.RaftLog.entries {
-			var entryStr string
-			if e.Data == nil {
-				entryStr = "(nil data)"
-			} else {
-				entryStr = string(e.Data)
-				if entryStr == "dummy entry" {
-					continue
-				}
-			}
-			entryStr += fmt.Sprintf(" %v", e)
+			"+++++[id=%d][term=%d] post-propose latest entries, last index = %d:\n",
+			r.id, r.Term, r.RaftLog.entries[len(r.RaftLog.entries)-1].Index)
+		// for i, e := range r.RaftLog.entries {
+		// 	var entryStr string
+		// 	if e.Data == nil {
+		// 		entryStr = "(noop entry)"
+		// 	} else {
+		// 		entryStr = string(e.Data)
+		// 		if entryStr == "dummy entry" {
+		// 			continue
+		// 		} else {
+		// 			entryStr = fmt.Sprintf("(data len %d)", len(entryStr))
+		// 		}
+		// 	}
+		// 	// entryStr += fmt.Sprintf(" %v", e)
 
-			toPrint += fmt.Sprintf(
-				"+++++[id=%d][term=%d] \tlatest_entries[%d]: %s\n",
-				r.id, r.Term, i, entryStr)
-		}
+		// 	toPrint += fmt.Sprintf(
+		// 		"+++++[id=%d][term=%d] \tlatest_entries[%d]: %s\n",
+		// 		r.id, r.Term, i, entryStr)
+		// }
 		fmt.Println(toPrint)
 
 		r.broadcastAppend()
 	case pb.MessageType_MsgAppendResponse:
-		toPrint += fmt.Sprintf("+++++[id=%d][term=%d] receive append response from %d, index=%d\n", r.id, r.Term, m.From, m.Index)
+		// toPrint += fmt.Sprintf("+++++[id=%d][term=%d] receive append response from %d, index=%d\n", r.id, r.Term, m.From, m.Index)
+		// fmt.Println(toPrint)
 		// Update the progress of the follower
 		if r.Prs[m.From].Match < m.Index {
 			r.Prs[m.From].Match = m.Index
@@ -655,7 +661,6 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			r.Prs[m.From].Next = r.Prs[m.From].Match + 1
 		}
 		r.maybeAdvanceCommit()
-		fmt.Println(toPrint)
 	case pb.MessageType_MsgHeartbeatResponse:
 		if m.Index < r.RaftLog.LastIndex() {
 			r.sendAppend(m.From)
@@ -675,23 +680,27 @@ func (r *Raft) maybeAdvanceCommit() {
 		}
 	}
 	sort.Slice(indexes, func(i, j int) bool { return indexes[i] > indexes[j] }) // descending
-	fmt.Printf(
+
+	var toPrint string
+	toPrint += fmt.Sprintf(
 		"+++++[id=%d][term=%d] on leader, commit indexes %v\n",
 		r.id, r.Term, indexes)
 
 	majorityPos := len(indexes) / 2
 	canCommit := uint64(indexes[majorityPos])
 	if canCommit > r.RaftLog.committed && r.RaftLog.entries[canCommit].Term == r.Term {
-		fmt.Printf(
+		toPrint += fmt.Sprintf(
 			"+++++[id=%d][term=%d] commit %d -> %d\n",
 			r.id, r.Term, r.RaftLog.committed, canCommit)
-
+		fmt.Println(toPrint)
 		r.RaftLog.committed = canCommit
 
 		// broadcast commit message to other peers
 		if len(r.Prs) > 1 {
 			r.broadcastAppend()
 		}
+	} else {
+		fmt.Println(toPrint)
 	}
 }
 
@@ -700,9 +709,9 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 	r.Lead = m.From
 	var toPrint string
-	toPrint += fmt.Sprintf(
-		"+++++[id=%d][term=%d] follower receives append: m.Term=%d, m.Index=%d, m.LogTerm=%d, m.Commit=%d, entries: len %d, %v\n",
-		r.id, r.Term, m.Term, m.Index, m.LogTerm, m.Commit, len(m.Entries), m.Entries)
+	// toPrint += fmt.Sprintf(
+	// 	"+++++[id=%d][term=%d] follower receives append: m.Term=%d, m.Index=%d, m.LogTerm=%d, m.Commit=%d, entries: len %d\n",
+	// 	r.id, r.Term, m.Term, m.Index, m.LogTerm, m.Commit, len(m.Entries))
 
 	// Term match check
 	if m.Index != 0 {
@@ -727,24 +736,26 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	r.RaftLog.appendEntries(m)
 
 	toPrint += fmt.Sprintf(
-		"+++++[id=%d][term=%d] post-append latest entries:\n",
-		r.id, r.Term)
-	for i, e := range r.RaftLog.entries {
-		var entryStr string
-		if e.Data == nil {
-			entryStr = "(nil data)"
-		} else {
-			entryStr = string(e.Data)
-			if entryStr == "dummy entry" {
-				continue
-			}
-		}
-		entryStr += fmt.Sprintf(" %v", e)
+		"+++++[id=%d][term=%d] post-append latest entries, last index=%d:\n",
+		r.id, r.Term, r.RaftLog.entries[len(r.RaftLog.entries)-1].Index)
+	// for i, e := range r.RaftLog.entries {
+	// 	var entryStr string
+	// 	if e.Data == nil {
+	// 		entryStr = "(noop entry)"
+	// 	} else {
+	// 		entryStr = string(e.Data)
+	// 		if entryStr == "dummy entry" {
+	// 			continue
+	// 		} else {
+	// 			entryStr = fmt.Sprintf("(data len %d)", len(entryStr))
+	// 		}
+	// 	}
+	// 	// entryStr += fmt.Sprintf(" %v", e)
 
-		toPrint += fmt.Sprintf(
-			"+++++[id=%d][term=%d] \tlatest_entries[%d]: %s\n",
-			r.id, r.Term, i, entryStr)
-	}
+	// 	toPrint += fmt.Sprintf(
+	// 		"+++++[id=%d][term=%d] \tlatest_entries[%d]: %s\n",
+	// 		r.id, r.Term, i, entryStr)
+	// }
 
 	latestEntryIndex := m.Index
 	for _, e := range m.Entries {

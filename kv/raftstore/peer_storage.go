@@ -308,29 +308,31 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
-	// panic("(ps *PeerStorage) Append not implemented yet")
+
 	if len(entries) == 0 {
 		return nil
 	}
 
-	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
-
-	var newLargestIndex uint64
+	var newLastIndex uint64
 	for _, e := range entries {
 		logKey := meta.RaftLogKey(ps.region.Id, e.Index)
 		raftWB.SetCF(engine_util.CfDefault /* ? */, logKey, e.Data)
-		newLargestIndex = e.Index
+		newLastIndex = e.Index
 	}
-	oldLargestIndex := ps.raftState.LastIndex
-	if newLargestIndex < oldLargestIndex {
+	prevLastIndex := ps.raftState.LastIndex
+	ps.raftState.LastIndex = newLastIndex
+	ps.raftState.LastTerm = entries[len(entries)-1].Term
+	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+
+	if newLastIndex < prevLastIndex {
 		// Delete any larger entries
-		staleEntries, err := ps.Entries(newLargestIndex+1, oldLargestIndex+1)
+		staleEntries, err := ps.Entries(newLastIndex+1, prevLastIndex+1)
 		if err != nil {
 			panic(
 				fmt.Sprintf(
 					"[%v]: err getting ps.Entries: %s, largestIndex: %d, ps.applyState: %v",
 					ps.Tag,
-					err.Error(), newLargestIndex, ps.applyState,
+					err.Error(), newLastIndex, ps.applyState,
 				),
 			)
 		}
@@ -380,19 +382,21 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	raftWB := &engine_util.WriteBatch{}
 	if len(ready.Entries) != 0 {
 		for _, e := range ready.Entries {
-			toPrint += fmt.Sprintf("+++++[%s] SaveReadyState -> entry to append %v\n", ps.Tag, e)
+			toPrint += fmt.Sprintf("+++++[%s] SaveReadyState -> entry to append: index: %d, term: %d\n", ps.Tag, e.Index, e.Term)
 		}
 		if err := ps.Append(ready.Entries, raftWB); err != nil {
 			panic("ps.Append err:" + err.Error())
 		}
-		ps.raftState.LastTerm = ready.Entries[len(ready.Entries)-1].Term
-		ps.raftState.LastIndex = ready.Entries[len(ready.Entries)-1].Index
 	}
-	for _, e := range ready.CommittedEntries {
-		toPrint += fmt.Sprintf("+++++[%s] SaveReadyState -> committed entry %v\n", ps.Tag, e)
+
+	if raftWB.Len() != 0 {
+		toPrint += fmt.Sprintf("+++++[%s] written to Raft KV\n", ps.Tag)
 	}
-	fmt.Println(toPrint)
 	raftWB.MustWriteToDB(ps.Engines.Raft)
+
+	if len(toPrint) > 0 {
+		fmt.Println(toPrint)
+	}
 	return nil, nil
 }
 

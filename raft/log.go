@@ -181,7 +181,9 @@ func (l *RaftLog) appendEntries(m pb.Message) {
 			l.entries = append(l.entries, newEntry)
 		}
 	}
-	fmt.Println(toPrint)
+	if len(toPrint) > 0 {
+		fmt.Println(toPrint)
+	}
 }
 
 // unstableEntries return all the unstable entries
