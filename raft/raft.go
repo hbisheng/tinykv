@@ -161,6 +161,7 @@ type Raft struct {
 	// (Used in 3A conf change)
 	PendingConfIndex uint64
 
+	electionTimeoutRandomized int
 	// applied uint64
 }
 
@@ -213,9 +214,11 @@ func newRaft(c *Config) *Raft {
 	}
 	// Your Code Here (2A).
 
+	electionTimeoutRandomized := generateRandomizedElectionTimeout(c.ElectionTick)
 	r := &Raft{
 		id:   c.ID,
 		Term: hardState.Term,
+		Lead: 0,
 		Vote: hardState.Vote,
 
 		// the log
@@ -240,16 +243,12 @@ func newRaft(c *Config) *Raft {
 		heartbeatTimeout: c.HeartbeatTick,
 		// baseline of election interval
 		electionTimeout: c.ElectionTick,
-		// // number of ticks since it reached last heartbeatTimeout.
-		// // only leader keeps heartbeatElapsed.
-		// heartbeatElapsed int
-		// // Ticks since it reached last electionTimeout when it is leader or candidate.
-		// // Number of ticks since it reached last electionTimeout or received a
-		// // valid message from current leader when it is a follower.
-		// electionElapsed int
+
+		electionElapsed:           electionTimeoutRandomized,
+		electionTimeoutRandomized: electionTimeoutRandomized,
+
 		// applied: c.Applied,
 	}
-	r.becomeFollower(r.Term, None)
 	return r
 }
 
@@ -279,7 +278,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 	}
 
 	if len(entries) == 0 {
-		fmt.Printf("+++++[id=%d][term=%d] just trying to send the latest commit index %d to %d:\n", r.id, r.Term, r.RaftLog.committed, to)
+		// fmt.Printf("+++++[id=%d][term=%d] just trying to send the latest commit index %d to %d:\n", r.id, r.Term, r.RaftLog.committed, to)
 		r.msgs = append(r.msgs, pb.Message{
 			MsgType: pb.MessageType_MsgAppend,
 			To:      to,
@@ -373,6 +372,7 @@ func (r *Raft) tick() {
 		if r.heartbeatElapsed == r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
 			// broadcast heartbeat messages to every peer except oneself
+			fmt.Print("broadcasting heartbeat due to tick")
 			r.broadcastHeartbeat()
 		}
 	}
@@ -398,6 +398,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 
 	r.State = StateFollower
 	r.electionElapsed = generateRandomizedElectionTimeout(r.electionTimeout)
+	r.electionTimeoutRandomized = r.electionElapsed
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -411,6 +412,7 @@ func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
 	r.State = StateCandidate
 	r.electionElapsed = generateRandomizedElectionTimeout(r.electionTimeout)
+	r.electionTimeoutRandomized = r.electionElapsed
 
 	fmt.Printf("+++++[id=%d] become candidate at term %d, rand timeout %d\n", r.id, r.Term, r.electionElapsed)
 	// r.startNewElection()
@@ -445,6 +447,7 @@ func (r *Raft) becomeLeader() {
 	r.State = StateLeader
 	r.heartbeatElapsed = 0
 	r.electionElapsed = generateRandomizedElectionTimeout(r.electionTimeout)
+	r.electionTimeoutRandomized = r.electionElapsed
 
 	// Propose no-op entry.
 	r.Step(pb.Message{
@@ -481,6 +484,11 @@ func (r *Raft) Step(m pb.Message) error {
 
 	// Handle vote requests
 	if m.MsgType == pb.MessageType_MsgRequestVote {
+		fmt.Printf(
+			"+++++[id=%d][term=%d] received vote request from %d at term %d, r.Vote: %d\n",
+			r.id, r.Term, m.From, m.Term, r.Vote,
+		)
+
 		prevVote := r.Vote
 		if r.Vote == None && isUpToDate(m.Index, m.LogTerm, r.RaftLog.LastIndex(), r.RaftLog.entries[r.RaftLog.LastIndex()].Term) {
 			r.Vote = m.From
@@ -495,10 +503,17 @@ func (r *Raft) Step(m pb.Message) error {
 		})
 
 		if r.Vote != m.From {
-			fmt.Printf(
-				"+++++[id=%d][term=%d] received vote request from %d at term %d, REJECTED! my vote: %d\n",
-				r.id, r.Term, m.From, m.Term, prevVote,
-			)
+			if r.Vote == None {
+				fmt.Printf(
+					"+++++[id=%d][term=%d] received vote request from %d at term %d, REJECTED because not up-to-date!\n",
+					r.id, r.Term, m.From, m.Term,
+				)
+			} else {
+				fmt.Printf(
+					"+++++[id=%d][term=%d] received vote request from %d at term %d, REJECTED! my vote: %d\n",
+					r.id, r.Term, m.From, m.Term, prevVote,
+				)
+			}
 		} else {
 			fmt.Printf(
 				"+++++[id=%d][term=%d] received vote request from %d at term %d, GRANTED\n",
@@ -601,6 +616,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 	var toPrint string
 	switch m.MsgType {
 	case pb.MessageType_MsgBeat:
+		fmt.Print("broadcasting heartbeat due to beat msg")
 		r.broadcastHeartbeat()
 	case pb.MessageType_MsgPropose:
 		toPrint += fmt.Sprintf(
@@ -650,7 +666,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		// 		"+++++[id=%d][term=%d] \tlatest_entries[%d]: %s\n",
 		// 		r.id, r.Term, i, entryStr)
 		// }
-		fmt.Println(toPrint)
+		fmt.Print(toPrint)
 
 		r.broadcastAppend()
 	case pb.MessageType_MsgAppendResponse:
@@ -695,7 +711,7 @@ func (r *Raft) maybeAdvanceCommit() {
 		toPrint += fmt.Sprintf(
 			"+++++[id=%d][term=%d] commit %d -> %d\n",
 			r.id, r.Term, r.RaftLog.committed, canCommit)
-		fmt.Println(toPrint)
+		fmt.Print(toPrint)
 		r.RaftLog.committed = canCommit
 
 		// broadcast commit message to other peers
@@ -703,7 +719,7 @@ func (r *Raft) maybeAdvanceCommit() {
 			r.broadcastAppend()
 		}
 	} else {
-		fmt.Println(toPrint)
+		fmt.Print(toPrint)
 	}
 }
 
@@ -773,7 +789,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		r.RaftLog.committed = canCommit
 	}
 
-	fmt.Println(toPrint)
+	// fmt.Println(toPrint)
 
 	r.msgs = append(r.msgs, pb.Message{
 		MsgType: pb.MessageType_MsgAppendResponse,
@@ -787,6 +803,10 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
+
+	// Reset electioin elapsed.
+	// r.electionElapsed = r.electionTimeoutRandomized
+
 	r.Lead = m.From
 	r.msgs = append(r.msgs, pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeatResponse,

@@ -396,7 +396,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	raftWB.MustWriteToDB(ps.Engines.Raft)
 
 	if len(toPrint) > 0 {
-		fmt.Println(toPrint)
+		// fmt.Println(toPrint)
 	}
 	return nil, nil
 }

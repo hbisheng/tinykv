@@ -16,6 +16,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
+	"github.com/pingcap-incubator/tinykv/raft"
 	"github.com/pingcap-incubator/tinykv/scheduler/pkg/btree"
 	"github.com/pingcap/errors"
 )
@@ -90,7 +91,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		for _, e := range rd.CommittedEntries {
 			// find the proposal, apply it, and remove, respond to the client.
 			proposal := d.peer.popProposalByIndex(e.Index)
-			toPrint += fmt.Sprintf("+++++[id=%d] committed entry: %v, matching proposal: %v, proposals: %v\n", d.PeerId(), e, proposal, d.peer.proposals)
+
+			// if proposal != nil {
+			// 	toPrint += fmt.Sprintf("+++++[id=%d] committed entry: %v, matching proposal: %v, proposals: %v\n", d.PeerId(), e, proposal, d.peer.proposals)
+			// }
 
 			if proposal != nil && proposal.term != e.Term {
 				proposal.cb.Done(ErrRespStaleCommand(e.Term))
@@ -109,20 +113,26 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			for _, r := range cmdRequest.Requests {
 				if r.CmdType == raft_cmdpb.CmdType_Put {
 					kvWB.SetCF(r.Put.GetCf(), r.Put.GetKey(), r.Put.GetValue())
-					toPrint += fmt.Sprintf("+++++[id=%d] writing [cf=%v,key=%v,val=%v]\n", d.PeerId(), r.Put.GetCf(), r.Put.GetKey(), r.Put.GetValue())
+					if proposal != nil {
+						toPrint += fmt.Sprintf("+++++[id=%d] writing [cf=%v,key=%v,val=%v]\n", d.PeerId(), r.Put.GetCf(), r.Put.GetKey(), r.Put.GetValue())
+					}
 					responses = append(responses, &raft_cmdpb.Response{
 						CmdType: r.CmdType,
 						Put:     &raft_cmdpb.PutResponse{},
 					})
 				} else if r.CmdType == raft_cmdpb.CmdType_Delete {
 					kvWB.DeleteCF(r.Delete.GetCf(), r.Delete.GetKey())
-					toPrint += fmt.Sprintf("+++++[id=%d] deleting [cf=%v,key=%v]\n", d.PeerId(), r.Put.GetCf(), r.Put.GetKey())
+					if proposal != nil {
+						toPrint += fmt.Sprintf("+++++[id=%d] deleting [cf=%v,key=%v]\n", d.PeerId(), r.Put.GetCf(), r.Put.GetKey())
+					}
 					responses = append(responses, &raft_cmdpb.Response{
 						CmdType: r.CmdType,
 						Delete:  &raft_cmdpb.DeleteResponse{},
 					})
 				} else if r.CmdType == raft_cmdpb.CmdType_Snap {
-					toPrint += fmt.Sprintf("+++++[id=%d] snapshot command, openning a new transaction! returning info %v \n", d.PeerId(), d.peerStorage.Region())
+					// if proposal != nil {
+					// toPrint += fmt.Sprintf("+++++[id=%d] snapshot command, openning a new transaction! returning info %v \n", d.PeerId(), d.peerStorage.Region())
+					// }
 					responses = append(responses, &raft_cmdpb.Response{
 						CmdType: r.CmdType,
 						Snap: &raft_cmdpb.SnapResponse{
@@ -152,21 +162,26 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		regionLocalState.State = rspb.PeerState_Normal
 		regionLocalState.Region = d.peerStorage.region
 		kvWB.SetMeta(meta.RegionStateKey(d.peerStorage.region.GetId()), regionLocalState)
-		toPrint += fmt.Sprintf("+++++[id=%d] persisting regionLocalState: %v\n", d.PeerId(), regionLocalState)
 
 		d.peerStorage.applyState.AppliedIndex = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
 		kvWB.SetMeta(meta.ApplyStateKey(d.peerStorage.region.GetId()), d.peerStorage.applyState)
-		toPrint += fmt.Sprintf("+++++[id=%d] persisting applyState: %v\n", d.PeerId(), d.peerStorage.applyState)
 
 		kvWB.MustWriteToDB(d.ctx.engine.Kv)
+
+		toPrint += fmt.Sprintf("+++++[id=%d] persisting regionLocalState: %v\n", d.PeerId(), regionLocalState)
+		toPrint += fmt.Sprintf("+++++[id=%d] persisting applyState: %v\n", d.PeerId(), d.peerStorage.applyState)
 		toPrint += fmt.Sprintf("+++++[id=%d] finish writing to KV store\n", d.PeerId())
 
 		for i := range proposalsToRespond {
 			proposalsToRespond[i].cb.Done(proposalReponses[i])
-			toPrint += fmt.Sprintf("+++++[id=%d] responded to proposal: %v\n", d.PeerId(), proposalsToRespond[i])
+			if d.RaftGroup.Raft.State == raft.StateLeader {
+				toPrint += fmt.Sprintf("+++++[id=%d] responded to proposal: %v\n", d.PeerId(), proposalsToRespond[i])
+			}
 		}
 
-		fmt.Println(toPrint)
+		if d.RaftGroup.Raft.State == raft.StateLeader {
+			fmt.Println(toPrint)
+		}
 	}
 
 	allPeers := d.peer.Region().GetPeers()
@@ -180,7 +195,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				RegionEpoch: &metapb.RegionEpoch{},
 			},
 		); err != nil {
-			panic(fmt.Sprintf("d.ctx.trans.Send() returned error: %s, msg: %v", err.Error(), msg))
+			log.Warnf("d.ctx.trans.Send() returned error: %s, msg: %v", err.Error(), msg)
 		}
 	}
 
