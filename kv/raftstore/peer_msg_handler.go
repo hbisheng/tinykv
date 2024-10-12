@@ -53,6 +53,29 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 	rd := d.peer.RaftGroup.Ready()
 
+	// Handle stale proposals that will never be answered.
+
+	// // Attempt 1: clear proposals when there are overwriting entries.
+	// if len(rd.Entries) > 0 && rd.Entries[0].Index <= d.peer.peerStorage.raftState.LastIndex {
+	// 	var toPrint string
+	// 	for i := rd.Entries[0].Index; i <= d.peer.peerStorage.raftState.LastIndex; i++ {
+	// 		if proposal := d.peer.popProposalByIndex(i); proposal != nil {
+	// 			proposal.cb.Done(ErrRespStaleCommand(term))
+	// 		}
+	// 	}
+	// 	fmt.Print(toPrint)
+	// }
+
+	// // Attempt 2: clear proposals when term changes
+	// if rd.HardState.Term != 0 && rd.HardState.Term != d.peer.peerStorage.raftState.HardState.Term {
+	// 	var toPrint string
+	// 	newProposals := []*proposal{}
+	// 	for _, p := range d.peer.proposals {
+
+	// 	}
+	// 	fmt.Print(toPrint)
+	// }
+
 	_, err := d.peer.peerStorage.SaveReadyState(&rd)
 	if err != nil {
 		panic("SaveReadyState returned error: %s" + err.Error())
@@ -67,8 +90,12 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		for _, e := range rd.CommittedEntries {
 			// find the proposal, apply it, and remove, respond to the client.
 			proposal := d.peer.popProposalByIndex(e.Index)
-			if proposal == nil {
-				continue
+			toPrint += fmt.Sprintf("+++++[id=%d] committed entry: %v, matching proposal: %v, proposals: %v\n", d.PeerId(), e, proposal, d.peer.proposals)
+
+			if proposal != nil && proposal.term != e.Term {
+				proposal.cb.Done(ErrRespStaleCommand(e.Term))
+				toPrint += fmt.Sprintf("[id=%d] found stale command at index %d, prev term %d, new term %d\n", d.PeerId(), e.Index, proposal.term, e.Term)
+				proposal = nil
 			}
 
 			cmdRequest := new(raft_cmdpb.RaftCmdRequest)
@@ -103,17 +130,21 @@ func (d *peerMsgHandler) HandleRaftReady() {
 						},
 					})
 
-					proposal.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
-					// proposal.cb.Txn = d.ctx.engine.Raft.NewTransaction(false)
+					if proposal != nil {
+						proposal.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
+					}
 				} else {
 					panic(fmt.Sprintf("unexpected command: %v", r))
 				}
 			}
-			proposalsToRespond = append(proposalsToRespond, proposal)
-			proposalReponses = append(proposalReponses, &raft_cmdpb.RaftCmdResponse{
-				Header:    newCmdResp().Header,
-				Responses: responses,
-			})
+
+			if proposal != nil {
+				proposalsToRespond = append(proposalsToRespond, proposal)
+				proposalReponses = append(proposalReponses, &raft_cmdpb.RaftCmdResponse{
+					Header:    newCmdResp().Header,
+					Responses: responses,
+				})
+			}
 		}
 
 		// Update the KVs and the apply/region at the same transaction
@@ -130,11 +161,12 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		kvWB.MustWriteToDB(d.ctx.engine.Kv)
 		toPrint += fmt.Sprintf("+++++[id=%d] finish writing to KV store\n", d.PeerId())
 
-		fmt.Println(toPrint)
-
 		for i := range proposalsToRespond {
 			proposalsToRespond[i].cb.Done(proposalReponses[i])
+			toPrint += fmt.Sprintf("+++++[id=%d] responded to proposal: %v\n", d.PeerId(), proposalsToRespond[i])
 		}
+
+		fmt.Println(toPrint)
 	}
 
 	allPeers := d.peer.Region().GetPeers()
@@ -242,12 +274,18 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		panic(err.Error())
 	}
 
-	d.peer.proposals = append(d.peer.proposals, &proposal{
-		index: d.peer.nextProposalIndex(),
-		term:  d.peer.RaftGroup.Raft.Term,
-		cb:    cb,
-	})
-	d.peer.RaftGroup.Propose(cmdRequestBytes)
+	nextIndex := d.peer.nextProposalIndex()
+	if err := d.peer.RaftGroup.Propose(cmdRequestBytes); err != nil {
+		leaderPeer := findPeerByID(d.Region().Peers, d.peer.RaftGroup.Raft.Lead) // fix this if it panics
+		cb.Done(ErrResp(&util.ErrNotLeader{RegionId: d.regionId, Leader: leaderPeer}))
+		fmt.Printf("====================> [id=%d] failed to propose, err: %v, msg: %v\n", d.PeerId(), err, msg)
+	} else {
+		d.peer.proposals = append(d.peer.proposals, &proposal{
+			index: nextIndex,
+			term:  d.peer.RaftGroup.Raft.Term,
+			cb:    cb,
+		})
+	}
 }
 
 func (d *peerMsgHandler) onTick() {

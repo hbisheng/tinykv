@@ -317,12 +317,15 @@ func (r *Raft) sendAppend(to uint64) bool {
 }
 
 func (r *Raft) broadcastHeartbeat() {
+	var toPrint string
 	for peerID := range r.Prs {
 		if peerID == r.id {
 			continue
 		}
 		r.sendHeartbeat(peerID)
+		toPrint += fmt.Sprintf("[id=%d] pushing heartbeat to outbound messages for id=%d\n", r.id, peerID)
 	}
+	fmt.Print(toPrint)
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
@@ -370,10 +373,6 @@ func (r *Raft) tick() {
 		if r.heartbeatElapsed == r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
 			// broadcast heartbeat messages to every peer except oneself
-			fmt.Printf(
-				"+++++[id=%d][term=%d] r.heartbeatElapsed: %d, sending heartbeat broadcast\n",
-				r.id, r.Term, r.heartbeatElapsed,
-			)
 			r.broadcastHeartbeat()
 		}
 	}
@@ -441,7 +440,7 @@ func (r *Raft) becomeLeader() {
 	// NOTE: Leader should propose a noop entry on its term
 
 	// r.Term += 1
-	fmt.Printf("+++++[id=%d] BECOME LEADER at term %d, proposing noop entry <--------------\n", r.id, r.Term)
+	fmt.Printf("+++++[id=%d] BECOME LEADER at term %d, proposing noop entry <===============\n", r.id, r.Term)
 
 	r.State = StateLeader
 	r.heartbeatElapsed = 0
@@ -474,6 +473,10 @@ func (r *Raft) Step(m pb.Message) error {
 			fmt.Printf("+++++[id=%d][term=%d] ingore message %v from %d, term %d is lower\n", r.id, r.Term, m.MsgType, m.From, m.Term)
 			return nil
 		}
+	}
+
+	if m.MsgType == pb.MessageType_MsgPropose && r.State != StateLeader {
+		return errors.New("not leader")
 	}
 
 	// Handle vote requests
@@ -790,6 +793,8 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 		To:      m.From,
 		From:    r.id,
 		Term:    r.Term,
+
+		Commit:  r.RaftLog.committed,
 		Index:   r.RaftLog.LastIndex(),
 		LogTerm: r.RaftLog.entries[r.RaftLog.LastIndex()].Term,
 	})

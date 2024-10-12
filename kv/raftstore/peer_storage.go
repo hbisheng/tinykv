@@ -313,13 +313,14 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 		return nil
 	}
 
+	prevLastIndex := ps.raftState.LastIndex
 	var newLastIndex uint64
 	for _, e := range entries {
 		logKey := meta.RaftLogKey(ps.region.Id, e.Index)
 		raftWB.SetCF(engine_util.CfDefault /* ? */, logKey, e.Data)
 		newLastIndex = e.Index
 	}
-	prevLastIndex := ps.raftState.LastIndex
+
 	ps.raftState.LastIndex = newLastIndex
 	ps.raftState.LastTerm = entries[len(entries)-1].Term
 	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
