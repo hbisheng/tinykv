@@ -88,6 +88,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		kvWB := &engine_util.WriteBatch{}
 		proposalsToRespond := []*proposal{}
 		proposalReponses := []*raft_cmdpb.RaftCmdResponse{}
+		cbsForRead := []*message.Callback{}
 		for _, e := range rd.CommittedEntries {
 			// find the proposal, apply it, and remove, respond to the client.
 			proposal := d.peer.popProposalByIndex(e.Index)
@@ -131,8 +132,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 					})
 				} else if r.CmdType == raft_cmdpb.CmdType_Snap {
 					// if proposal != nil {
-					// toPrint += fmt.Sprintf("+++++[id=%d] snapshot command, openning a new transaction! returning info %v \n", d.PeerId(), d.peerStorage.Region())
+					// 	toPrint += fmt.Sprintf("+++++[id=%d] snapshot command, openning a new transaction! returning info %v \n", d.PeerId(), d.peerStorage.Region())
 					// }
+
+					// readResponses[len(responses)] = true
 					responses = append(responses, &raft_cmdpb.Response{
 						CmdType: r.CmdType,
 						Snap: &raft_cmdpb.SnapResponse{
@@ -141,7 +144,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 					})
 
 					if proposal != nil {
-						proposal.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
+						cbsForRead = append(cbsForRead, proposal.cb)
+						// proposal.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
 					}
 				} else {
 					panic(fmt.Sprintf("unexpected command: %v", r))
@@ -170,7 +174,11 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 		toPrint += fmt.Sprintf("+++++[id=%d] persisting regionLocalState: %v\n", d.PeerId(), regionLocalState)
 		toPrint += fmt.Sprintf("+++++[id=%d] persisting applyState: %v\n", d.PeerId(), d.peerStorage.applyState)
-		toPrint += fmt.Sprintf("+++++[id=%d] finish writing to KV store\n", d.PeerId())
+		toPrint += fmt.Sprintf("+++++[id=%d] finish writing to KV store, len(rd.CommittedEntries):%d \n", d.PeerId(), len(rd.CommittedEntries))
+
+		for _, cb := range cbsForRead {
+			cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
+		}
 
 		for i := range proposalsToRespond {
 			proposalsToRespond[i].cb.Done(proposalReponses[i])
@@ -180,7 +188,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		}
 
 		if d.RaftGroup.Raft.State == raft.StateLeader {
-			fmt.Println(toPrint)
+			// fmt.Println(toPrint)
+			log.Warn(toPrint)
 		}
 	}
 

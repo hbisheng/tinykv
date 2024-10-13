@@ -20,6 +20,7 @@ import (
 	"math/rand"
 	"sort"
 
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -181,20 +182,23 @@ func newRaft(c *Config) *Raft {
 		panic(err)
 	}
 
+	// weird logic here.
 	prs := make(map[uint64]*Progress, len(c.peers))
 	for _, peer := range c.peers {
-		prs[peer] = &Progress{Next: 1}
-		if fi > prs[peer].Next {
-			prs[peer].Next = fi
-		}
+		prs[peer] = &Progress{Match: fi - 1}
+		// prs[peer] = &Progress{Next: 1}
+		// if fi > prs[peer].Next {
+		// 	prs[peer].Next = fi
+		// }
 	}
 
 	if len(prs) == 0 {
-		for _, n := range confState.Nodes {
-			prs[n] = &Progress{Next: 1}
-			if fi > prs[n].Next {
-				prs[n].Next = fi
-			}
+		for _, peer := range confState.Nodes {
+			prs[peer] = &Progress{Match: fi - 1}
+			// prs[n] = &Progress{Next: 1}
+			// if fi > prs[n].Next {
+			// 	prs[n].Next = fi
+			// }
 		}
 	}
 
@@ -202,6 +206,7 @@ func newRaft(c *Config) *Raft {
 	raftLog.committed = hardState.Commit
 	raftLog.applied = c.Applied
 	for len(raftLog.entries) <= int(raftLog.stabled) {
+		panic("weird logic triggered")
 		raftLog.entries = append(raftLog.entries, pb.Entry{Data: []byte("dummy entry")})
 	}
 
@@ -273,8 +278,20 @@ func (r *Raft) broadcastAppend() error {
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	entries := []*pb.Entry{}
-	for i := r.Prs[to].Next; int(i) < len(r.RaftLog.entries); i++ {
-		entries = append(entries, &r.RaftLog.entries[i])
+
+	if r.Prs[to].Match == 0 {
+		// send everything. required by TestLeaderCommitPrecedingEntries2AB
+		for i := 1; int(i) < len(r.RaftLog.entries); i++ {
+			entries = append(entries, &r.RaftLog.entries[i])
+		}
+	} else if r.Prs[to].Next == r.Prs[to].Match+1 {
+		// Bulk send
+		for i := r.Prs[to].Next; int(i) < len(r.RaftLog.entries); i++ {
+			entries = append(entries, &r.RaftLog.entries[i])
+		}
+	} else {
+		// Probing mode
+		entries = append(entries, &r.RaftLog.entries[r.Prs[to].Next])
 	}
 
 	if len(entries) == 0 {
@@ -293,15 +310,9 @@ func (r *Raft) sendAppend(to uint64) bool {
 		return false
 	}
 
-	var toPrint string
-	toPrint += fmt.Sprintf("+++++[id=%d][term=%d] adding the following entries (index [%d, %d]) to outbound messages to %d:\n",
-		r.id, r.Term, entries[0].Index, entries[len(entries)-1].Index, to)
-
-	// for i, entry := range entries {
-	// 	toPrint += fmt.Sprintf("+++++[id=%d][term=%d] \tentries[%d], index: %d, data len: %d\n", r.id, r.Term, i, entry.Index, len(entry.Data))
-	// }
-	fmt.Print(toPrint)
-
+	// dedup?
+	logTerm := r.RaftLog.entries[entries[0].Index-1].Term
+	logIndex := entries[0].Index - 1
 	r.msgs = append(r.msgs, pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
 		To:      to,
@@ -312,6 +323,20 @@ func (r *Raft) sendAppend(to uint64) bool {
 		Entries: entries,
 		Commit:  r.RaftLog.committed,
 	})
+
+	var toPrint string
+	toPrint += fmt.Sprintf(
+		"+++++[id=%d][term=%d] add MsgAppend to r.msgs, (logTerm=%d, logIndex=%d) "+
+			"[%d..%d] entries ==> id=%d (next=%d,match=%d), my last_index=%d:\n",
+		r.id, r.Term, logTerm, logIndex,
+		entries[0].Index, entries[len(entries)-1].Index, to, r.Prs[to].Next, r.Prs[to].Match, r.RaftLog.LastIndex(),
+	)
+
+	// for i, entry := range entries {
+	// 	toPrint += fmt.Sprintf("+++++[id=%d][term=%d] \tentries[%d], index: %d, data len: %d\n", r.id, r.Term, i, entry.Index, len(entry.Data))
+	// }
+	fmt.Print(toPrint)
+
 	return true
 }
 
@@ -322,9 +347,11 @@ func (r *Raft) broadcastHeartbeat() {
 			continue
 		}
 		r.sendHeartbeat(peerID)
-		toPrint += fmt.Sprintf("[id=%d] pushing heartbeat to outbound messages for id=%d\n", r.id, peerID)
+		toPrint += fmt.Sprintf("+++++[id=%d] pushing heartbeat to outbound messages for id=%d\n", r.id, peerID)
 	}
 	fmt.Print(toPrint)
+	// reduce the rate of heartbeat
+	r.heartbeatElapsed = 0
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
@@ -335,6 +362,7 @@ func (r *Raft) sendHeartbeat(to uint64) {
 		To:      to,
 		From:    r.id,
 		Term:    r.Term,
+		Commit:  r.RaftLog.committed, // This doesn't seem to be very useful though.
 	})
 }
 
@@ -449,6 +477,16 @@ func (r *Raft) becomeLeader() {
 	r.electionElapsed = generateRandomizedElectionTimeout(r.electionTimeout)
 	r.electionTimeoutRandomized = r.electionElapsed
 
+	// Update next index optimistically
+	for _, pr := range r.Prs {
+		// TODO: consider last index + 1, because of the noop entry.
+		pr.Next = max(r.RaftLog.LastIndex(), 1)
+		if pr.Next == pr.Match {
+			// pr.Match is set to last entry during init. If they match, nothing needs to be sent.
+			pr.Next = pr.Match + 1
+		}
+	}
+
 	// Propose no-op entry.
 	r.Step(pb.Message{
 		MsgType: pb.MessageType_MsgPropose,
@@ -461,6 +499,12 @@ func (r *Raft) becomeLeader() {
 // Step the entrance of handle message, see `MessageType`
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
+	// if m.To != r.id {
+	// panic("bug bug bug in the framework")
+	// log.Warnf("wrong message to %d, target: %v, %v", r.id, m.To, m)
+	// return nil
+	// }
+
 	// Your Code Here (2A).
 	incomingTerm := m.Term
 	if incomingTerm > r.Term {
@@ -473,7 +517,7 @@ func (r *Raft) Step(m pb.Message) error {
 			// let local messages pass
 		} else {
 			// ignore messages with smaller terms
-			fmt.Printf("+++++[id=%d][term=%d] ingore message %v from %d, term %d is lower\n", r.id, r.Term, m.MsgType, m.From, m.Term)
+			fmt.Printf("+++++[id=%d][term=%d] ingore message %v from id=%d term=%d\n", r.id, r.Term, m.MsgType, m.From, m.Term)
 			return nil
 		}
 	}
@@ -485,8 +529,11 @@ func (r *Raft) Step(m pb.Message) error {
 	// Handle vote requests
 	if m.MsgType == pb.MessageType_MsgRequestVote {
 		fmt.Printf(
-			"+++++[id=%d][term=%d] received vote request from %d at term %d, r.Vote: %d\n",
-			r.id, r.Term, m.From, m.Term, r.Vote,
+			"+++++[id=%d][term=%d] received vote request from %d at term %d, m.Index: %d, m.LogTerm:%d, my li:%d, my li term:%d, r.Vote: %d\n",
+			r.id, r.Term, m.From, m.Term,
+			m.Index, m.LogTerm,
+			r.RaftLog.LastIndex(), r.RaftLog.entries[r.RaftLog.LastIndex()].Term,
+			r.Vote,
 		)
 
 		prevVote := r.Vote
@@ -616,7 +663,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 	var toPrint string
 	switch m.MsgType {
 	case pb.MessageType_MsgBeat:
-		fmt.Print("broadcasting heartbeat due to beat msg")
+		fmt.Print("+++++broadcasting heartbeat due to beat msg\n")
 		r.broadcastHeartbeat()
 	case pb.MessageType_MsgPropose:
 		toPrint += fmt.Sprintf(
@@ -625,7 +672,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		for i, e := range m.Entries {
 			entryStr := fmt.Sprintf("%+v", e)
 			if e.Data == nil {
-				entryStr = "(noop entry)"
+				entryStr = "(noop entry after winning compaign)"
 			}
 			toPrint += fmt.Sprintf(
 				"+++++[id=%d][term=%d] \tincoming entries[%d]: %s\n",
@@ -670,18 +717,52 @@ func (r *Raft) stepLeader(m pb.Message) error {
 
 		r.broadcastAppend()
 	case pb.MessageType_MsgAppendResponse:
-		// toPrint += fmt.Sprintf("+++++[id=%d][term=%d] receive append response from %d, index=%d\n", r.id, r.Term, m.From, m.Index)
-		// fmt.Println(toPrint)
-		// Update the progress of the follower
-		if r.Prs[m.From].Match < m.Index {
-			r.Prs[m.From].Match = m.Index
+		if m.Reject {
+			// r.Prs[m.From].Next -= 1
+			prevNext := r.Prs[m.From].Next
+			r.Prs[m.From].Next = m.Index
+			if r.Prs[m.From].Next < r.Prs[m.From].Match {
+				// likely due to the fake match init???
+				panic(
+					fmt.Sprintf(
+						"[id=%d][term=%d] unexpected append rejection. prevNext: %d, asking for: %d, m.From: %d, r.Prs[m.From].Match:%d",
+						r.id, r.Term, prevNext, m.Index, m.From, r.Prs[m.From].Match,
+					),
+				)
+			}
+			r.sendAppend(m.From)
+		} else {
+			toPrint += fmt.Sprintf("+++++[id=%d][term=%d] receive append response from %d, index=%d\n", r.id, r.Term, m.From, m.Index)
+			fmt.Print(toPrint)
+			// Update the progress of the follower
+			if r.Prs[m.From].Match < m.Index {
+				r.Prs[m.From].Match = m.Index
+			}
+			if r.Prs[m.From].Next < r.Prs[m.From].Match+1 {
+				r.Prs[m.From].Next = r.Prs[m.From].Match + 1
+			}
+			r.maybeAdvanceCommit()
+			if m.Index < r.RaftLog.LastIndex() {
+				r.sendAppend(m.From)
+			}
+		}
+	case pb.MessageType_MsgHeartbeatResponse:
+		// We should rely on append. <-- No, sometimes append messages can be lost
+
+		// Update next if possible. Is this necessary?
+		match := m.Commit
+		if term, err := r.RaftLog.Term(m.Index); err != nil && term == m.Term {
+			match = m.Index
+		}
+		if r.Prs[m.From].Match < match {
+			r.Prs[m.From].Match = match
 		}
 		if r.Prs[m.From].Next < r.Prs[m.From].Match+1 {
 			r.Prs[m.From].Next = r.Prs[m.From].Match + 1
 		}
-		r.maybeAdvanceCommit()
-	case pb.MessageType_MsgHeartbeatResponse:
-		if m.Index < r.RaftLog.LastIndex() {
+
+		// One test requires heartbeat to trigger append.
+		if match < r.RaftLog.LastIndex() {
 			r.sendAppend(m.From)
 		}
 	}
@@ -711,13 +792,20 @@ func (r *Raft) maybeAdvanceCommit() {
 		toPrint += fmt.Sprintf(
 			"+++++[id=%d][term=%d] commit %d -> %d\n",
 			r.id, r.Term, r.RaftLog.committed, canCommit)
-		fmt.Print(toPrint)
+
 		r.RaftLog.committed = canCommit
 
 		// broadcast commit message to other peers
 		if len(r.Prs) > 1 {
 			r.broadcastAppend()
+			// toPrint += fmt.Sprintf(
+			// 	"+++++[id=%d][term=%d] broadcasting heartbeat to update commit to %d\n",
+			// 	r.id, r.Term, r.RaftLog.committed)
+
+			// Can't use broadcastHeartbeat because of TestLeaderCommitEntry2AB
+			// r.broadcastHeartbeat()
 		}
+		// fmt.Print(toPrint)
 	} else {
 		fmt.Print(toPrint)
 	}
@@ -725,6 +813,11 @@ func (r *Raft) maybeAdvanceCommit() {
 
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
+	if m.To != 0 && m.To != r.id {
+		log.Warnf("wrong message to %d, target: %v, %v", r.id, m.To, m)
+		return
+	}
+
 	// Your Code Here (2A).
 	r.Lead = m.From
 	var toPrint string
@@ -733,22 +826,34 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	// 	r.id, r.Term, m.Term, m.Index, m.LogTerm, m.Commit, len(m.Entries))
 
 	// Term match check
-	if m.Index != 0 {
-		term, err := r.RaftLog.Term(m.Index)
-		if err != nil || term != m.LogTerm {
-			// reject
-			fmt.Printf(
-				"+++++[id=%d][term=%d] follower reject because term=%v err=%v\n",
-				r.id, r.Term, term, err)
-			r.msgs = append(r.msgs, pb.Message{
-				MsgType: pb.MessageType_MsgAppendResponse,
-				To:      m.From,
-				From:    r.id,
-				Term:    r.Term,
-				Reject:  true,
-			})
-			return
+
+	term, err := r.RaftLog.Term(m.Index)
+	if err != nil || term != m.LogTerm {
+		var entriesStr string
+		if len(m.Entries) == 0 {
+			entriesStr = "0 entry"
+		} else {
+			entriesStr = fmt.Sprintf(
+				"(idx=%d,term=%d)~(idx=%d,term=%d), %v",
+				m.Entries[0].Index, m.Entries[0].Term,
+				m.Entries[len(m.Entries)-1].Index, m.Entries[len(m.Entries)-1].Term,
+				m,
+			)
 		}
+
+		// reject
+		fmt.Printf(
+			"+++++[id=%d][term=%d] follower reject, m.Index=%d, m.LogTerm=%d, entries=%s, my log term=%v err=%v\n",
+			r.id, r.Term, m.Index, m.LogTerm, entriesStr, term, err)
+		r.msgs = append(r.msgs, pb.Message{
+			MsgType: pb.MessageType_MsgAppendResponse,
+			To:      m.From,
+			From:    r.id,
+			Term:    r.Term,
+			Index:   m.Index - 1, // Ask for a smaller index
+			Reject:  true,
+		})
+		return
 	}
 
 	// append
@@ -789,14 +894,15 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		r.RaftLog.committed = canCommit
 	}
 
-	// fmt.Println(toPrint)
+	// fmt.Print(toPrint)
 
 	r.msgs = append(r.msgs, pb.Message{
 		MsgType: pb.MessageType_MsgAppendResponse,
 		To:      m.From,
 		From:    r.id,
 		Term:    r.Term,
-		Index:   r.RaftLog.LastIndex(),
+		// Index:   r.RaftLog.LastIndex(),
+		Index: latestEntryIndex,
 	})
 }
 
@@ -806,6 +912,9 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 
 	// Reset electioin elapsed.
 	// r.electionElapsed = r.electionTimeoutRandomized
+
+	// Advance commit. The following is wrong. You have to ensure the entries match.
+	// r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
 
 	r.Lead = m.From
 	r.msgs = append(r.msgs, pb.Message{

@@ -70,13 +70,15 @@ func newLog(storage Storage) *RaftLog {
 	if err != nil {
 		panic("storage.LastIndex() " + err.Error())
 	}
-	entries := []pb.Entry{{Data: []byte("dummy entry")}}
-	if firstIndex < lastIndex+1 {
-		// // padding entries with dummy entries
-		// for i := 0; uint64(i) < firstIndex; i++ {
-		// 	entries = append(entries, pb.Entry{}) // dummy entry at position 0.
-		// }
+	entries := []pb.Entry{{Index: 0, Data: []byte("ooo")}}
+	// padding before first index
+	if firstIndex > 0 {
+		for i := 1; uint64(i) < firstIndex; i++ {
+			entries = append(entries, pb.Entry{Index: uint64(i), Data: []byte("ooo")}) // dummy entry at position 0.
+		}
+	}
 
+	if firstIndex < lastIndex+1 {
 		ee, err := storage.Entries(firstIndex, lastIndex+1)
 		if err != nil {
 			panic("storage.Entries() " + err.Error())
@@ -84,8 +86,22 @@ func newLog(storage Storage) *RaftLog {
 		entries = append(entries, ee...)
 	}
 
-	if len(entries) > 0 && int(entries[len(entries)-1].Index) != len(entries)-1 {
-		panic("unexpected init")
+	// if len(entries) > 0 && int(entries[len(entries)-1].Index) != len(entries)-1 {
+	// 	panic(
+	// 		fmt.Sprintf(
+	// 			"unexpected init, fi:%d, li:%d, len(entries):%d, entries[len(entries)-1].Index: %d",
+	// 			firstIndex, lastIndex, len(entries), entries[len(entries)-1].Index,
+	// 		),
+	// 	)
+	// }
+
+	if lastIndex != uint64(len(entries)-1) {
+		panic(
+			fmt.Sprintf(
+				"unexpected init, fi:%d, li:%d, len(entries):%d, entries[len(entries)-1].Index: %d",
+				firstIndex, lastIndex, len(entries), entries[len(entries)-1].Index,
+			),
+		)
 	}
 
 	// hardState, confState, err := storage.InitialState()
@@ -97,8 +113,12 @@ func newLog(storage Storage) *RaftLog {
 	// 	hardState, confState, entries)
 
 	stabled := uint64(len(entries) - 1)
-	if stabled < lastIndex {
-		stabled = lastIndex
+	if stabled != lastIndex {
+		panic(
+			fmt.Sprintf("weird logic triggered, fi: %d, li: %d, stabled: %d, entries: %v",
+				firstIndex, lastIndex, stabled, entries),
+		)
+		// stabled = lastIndex
 	}
 	return &RaftLog{
 		storage: storage,
@@ -176,13 +196,22 @@ func (l *RaftLog) appendEntries(m pb.Message) {
 				if l.stabled >= e.Index {
 					l.stabled = e.Index - 1
 				}
+			} else {
+				// Need to truncate as well
+				// hmmm, TestFollowerAppendEntries2AB does not expect this to be truncated.
+				// What fails if I don't do it? => nothing seems to =>
+				// => found it: the leader sends a smaller index, the follower has extra entries and assume everything matches.
+				// l.entries = l.entries[:e.Index+1]
+				// if l.stabled >= e.Index {
+				// 	l.stabled = e.Index
+				// }
 			}
 		} else {
 			l.entries = append(l.entries, newEntry)
 		}
 	}
 	if len(toPrint) > 0 {
-		fmt.Println(toPrint)
+		fmt.Print(toPrint)
 	}
 }
 
