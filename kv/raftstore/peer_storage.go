@@ -316,28 +316,45 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	prevLastIndex := ps.raftState.LastIndex
 	var newLastIndex uint64
 	for _, e := range entries {
+		e := e
 		logKey := meta.RaftLogKey(ps.region.Id, e.Index)
-		raftWB.SetCF(engine_util.CfDefault /* ? */, logKey, e.Data)
+		// raftWB.SetCF(engine_util.CfDefault /* ? */, logKey, e.Data)
+		raftWB.SetMeta(logKey, &e)
 		newLastIndex = e.Index
+		log.Warnf("[%v] add raft log entry at idx=%d", ps.Tag, e.Index)
+	}
+
+	psli, err := ps.LastIndex()
+	if err != nil {
+		panic(err)
 	}
 
 	if newLastIndex < prevLastIndex {
 		// Delete any larger entries
 		staleEntries, err := ps.Entries(newLastIndex+1, prevLastIndex+1)
 		if err != nil {
+			// shrinking the range
+			for end := prevLastIndex; end > newLastIndex+1; end-- {
+				staleEntries, err := ps.Entries(newLastIndex+1, end)
+				log.Warnf("ps.Entries[%d,%d), entries: %v, err: %v",
+					newLastIndex+1, end, staleEntries, err)
+			}
+
 			panic(
 				fmt.Sprintf(
-					"[%v]: err getting ps.Entries: %s, prevLastIndex=%d, newLastIndex: %d, ps.applyState:%v",
-					ps.Tag,
-					err.Error(), prevLastIndex, newLastIndex, ps.applyState,
+					"[%v]: err getting ps.Entries[%d,%d) ps.LastIndex():%d, prevLastIndex=%d, newLastIndex=%d, ps.applyState:%v, err:%v",
+					ps.Tag, newLastIndex+1, prevLastIndex+1, psli,
+					prevLastIndex, newLastIndex, ps.applyState, err.Error(),
 				),
 			)
 		}
 		for _, e := range staleEntries {
-			raftWB.DeleteCF(
-				engine_util.CfDefault, /* ? */
-				meta.RaftLogKey(ps.region.Id, e.Index),
-			)
+			raftWB.DeleteMeta(meta.RaftLogKey(ps.region.Id, e.Index))
+			// raftWB.DeleteCF(
+			// 	engine_util.CfDefault, /* ? */
+			// 	meta.RaftLogKey(ps.region.Id, e.Index),
+			// )
+			log.Warnf("[%v] delete raft log entry at idx=%d", ps.Tag, e.Index)
 		}
 	}
 
@@ -395,6 +412,18 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		toPrint += fmt.Sprintf("+++++[%s] written to Raft KV\n", ps.Tag)
 	}
 	raftWB.MustWriteToDB(ps.Engines.Raft)
+
+	// Check that all entries can be fetched.
+	// fi, _ := ps.FirstIndex()
+	// li, _ := ps.LastIndex()
+	// entries, err := ps.Entries(fi, li+1)
+	// if err != nil {
+	// 	panic(fmt.Sprintf("ps.Entries[%d,%d), entries: %v, err: %v",
+	// 		fi, li+1, entries, err))
+	// } else {
+	// 	log.Warnf("just checking, ps.Entries[%d,%d), entries: %v, err: %v",
+	// 		fi, li+1, entries, err)
+	// }
 
 	if len(toPrint) > 0 {
 		// fmt.Println(toPrint)

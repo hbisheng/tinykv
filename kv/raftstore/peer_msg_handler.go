@@ -89,6 +89,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		proposalsToRespond := []*proposal{}
 		proposalReponses := []*raft_cmdpb.RaftCmdResponse{}
 		cbsForRead := []*message.Callback{}
+
+		postWriteFuncs := []func(){}
 		for _, e := range rd.CommittedEntries {
 			// find the proposal, apply it, and remove, respond to the client.
 			proposal := d.peer.popProposalByIndex(e.Index)
@@ -109,6 +111,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				panic(err.Error())
 			}
 
+			cmdResp := newCmdResp()
 			responses := []*raft_cmdpb.Response{}
 			// do the operation and return results.
 			for _, r := range cmdRequest.Requests {
@@ -147,6 +150,25 @@ func (d *peerMsgHandler) HandleRaftReady() {
 						cbsForRead = append(cbsForRead, proposal.cb)
 						// proposal.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
 					}
+				} else if r.CmdType == raft_cmdpb.CmdType_Get {
+					resp := &raft_cmdpb.GetResponse{}
+					cf := r.Get.Cf
+					key := r.Get.Key
+
+					// populate the actual result later.
+					postWriteFuncs = append(postWriteFuncs, func() {
+						val, err := engine_util.GetCF(d.ctx.engine.Kv, cf, key)
+						if err != nil {
+							BindRespError(cmdResp, err)
+						} else {
+							resp.Value = val
+						}
+					})
+
+					responses = append(responses, &raft_cmdpb.Response{
+						CmdType: r.CmdType,
+						Get:     resp,
+					})
 				} else {
 					panic(fmt.Sprintf("unexpected command: %v", r))
 				}
@@ -154,10 +176,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 			if proposal != nil {
 				proposalsToRespond = append(proposalsToRespond, proposal)
-				proposalReponses = append(proposalReponses, &raft_cmdpb.RaftCmdResponse{
-					Header:    newCmdResp().Header,
-					Responses: responses,
-				})
+				cmdResp.Responses = responses
+				proposalReponses = append(proposalReponses, cmdResp)
 			}
 		}
 
@@ -179,6 +199,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		// Opening a transaction here to ensure all previously writes are visible.
 		for _, cb := range cbsForRead {
 			cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
+		}
+
+		for _, fn := range postWriteFuncs {
+			fn()
 		}
 
 		for i := range proposalsToRespond {
@@ -206,7 +230,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				RegionEpoch: &metapb.RegionEpoch{},
 			},
 		); err != nil {
-			log.Warnf("d.ctx.trans.Send() returned error: %s, msg: %v", err.Error(), msg)
+			log.Warnf(
+				"d.ctx.trans.Send() id=%d->id=%d msg: %v, returned error: %s",
+				msg.From, msg.To, msg, err.Error(),
+			)
 		}
 	}
 

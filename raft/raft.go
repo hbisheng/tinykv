@@ -347,7 +347,10 @@ func (r *Raft) broadcastHeartbeat() {
 			continue
 		}
 		r.sendHeartbeat(peerID)
-		toPrint += fmt.Sprintf("+++++[id=%d] pushing heartbeat to outbound messages for id=%d\n", r.id, peerID)
+		toPrint += fmt.Sprintf(
+			"+++++[id=%d][term=%d] pushing heartbeat to outbound messages for id=%d\n",
+			r.id, r.Term, peerID,
+		)
 	}
 	fmt.Print(toPrint)
 	// reduce the rate of heartbeat
@@ -400,7 +403,7 @@ func (r *Raft) tick() {
 		if r.heartbeatElapsed == r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
 			// broadcast heartbeat messages to every peer except oneself
-			fmt.Print("broadcasting heartbeat due to tick")
+			fmt.Print("broadcasting heartbeat due to tick\n")
 			r.broadcastHeartbeat()
 		}
 	}
@@ -782,8 +785,8 @@ func (r *Raft) maybeAdvanceCommit() {
 
 	var toPrint string
 	toPrint += fmt.Sprintf(
-		"+++++[id=%d][term=%d] on leader, commit indexes %v\n",
-		r.id, r.Term, indexes)
+		"+++++[id=%d][term=%d] on leader, commit indexes %v, my commit:%v\n",
+		r.id, r.Term, indexes, r.RaftLog.committed)
 
 	majorityPos := len(indexes) / 2
 	canCommit := uint64(indexes[majorityPos])
