@@ -787,6 +787,8 @@ func (r *Raft) maybeAdvanceCommit() {
 
 	majorityPos := len(indexes) / 2
 	canCommit := uint64(indexes[majorityPos])
+
+	// A leader can only commit the entry that belongs to its term.
 	if canCommit > r.RaftLog.committed && r.RaftLog.entries[canCommit].Term == r.Term {
 		toPrint += fmt.Sprintf(
 			"+++++[id=%d][term=%d] commit %d -> %d\n",
@@ -905,11 +907,10 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
 
 	// Reset electioin elapsed.
-	// r.electionElapsed = r.electionTimeoutRandomized
+	r.electionElapsed = r.electionTimeoutRandomized
 
-	// Advance commit. The following is wrong. You have to ensure the entries match.
-	// r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
-
+	// The following is WRONG. You have to ensure the entries match.
+	// // r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
 	r.Lead = m.From
 	r.msgs = append(r.msgs, pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeatResponse,

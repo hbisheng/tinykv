@@ -321,19 +321,15 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 		newLastIndex = e.Index
 	}
 
-	ps.raftState.LastIndex = newLastIndex
-	ps.raftState.LastTerm = entries[len(entries)-1].Term
-	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
-
 	if newLastIndex < prevLastIndex {
 		// Delete any larger entries
 		staleEntries, err := ps.Entries(newLastIndex+1, prevLastIndex+1)
 		if err != nil {
 			panic(
 				fmt.Sprintf(
-					"[%v]: err getting ps.Entries: %s, largestIndex: %d, ps.applyState: %v",
+					"[%v]: err getting ps.Entries: %s, prevLastIndex=%d, newLastIndex: %d, ps.applyState:%v",
 					ps.Tag,
-					err.Error(), newLastIndex, ps.applyState,
+					err.Error(), prevLastIndex, newLastIndex, ps.applyState,
 				),
 			)
 		}
@@ -344,6 +340,11 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 			)
 		}
 	}
+
+	// Update LastIndex after ps.Entries(). Otherwise may fail bound check.
+	ps.raftState.LastIndex = newLastIndex
+	ps.raftState.LastTerm = entries[len(entries)-1].Term
+	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
 
 	return nil
 }
