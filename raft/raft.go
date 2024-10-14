@@ -480,11 +480,11 @@ func (r *Raft) becomeLeader() {
 	// Update next index optimistically
 	for _, pr := range r.Prs {
 		// TODO: consider last index + 1, because of the noop entry.
-		pr.Next = max(r.RaftLog.LastIndex(), 1)
-		if pr.Next == pr.Match {
-			// pr.Match is set to last entry during init. If they match, nothing needs to be sent.
-			pr.Next = pr.Match + 1
-		}
+		pr.Next = max(r.RaftLog.LastIndex()+1, 1)
+		// if pr.Next == pr.Match {
+		// 	// pr.Match is set to last entry during init. If they match, nothing needs to be sent.
+		// 	pr.Next = pr.Match + 1
+		// }
 	}
 
 	// Propose no-op entry.
@@ -721,7 +721,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			// r.Prs[m.From].Next -= 1
 			prevNext := r.Prs[m.From].Next
 			r.Prs[m.From].Next = m.Index
-			if r.Prs[m.From].Next < r.Prs[m.From].Match {
+			if r.Prs[m.From].Next <= r.Prs[m.From].Match {
 				// likely due to the fake match init???
 				panic(
 					fmt.Sprintf(
@@ -850,7 +850,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 			To:      m.From,
 			From:    r.id,
 			Term:    r.Term,
-			Index:   m.Index - 1, // Ask for a smaller index
+			Index:   m.Index, // Ask for a smaller index, the preceding entry
 			Reject:  true,
 		})
 		return

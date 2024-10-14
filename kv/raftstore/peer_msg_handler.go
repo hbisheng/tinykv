@@ -176,6 +176,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		toPrint += fmt.Sprintf("+++++[id=%d] persisting applyState: %v\n", d.PeerId(), d.peerStorage.applyState)
 		toPrint += fmt.Sprintf("+++++[id=%d] finish writing to KV store, len(rd.CommittedEntries):%d \n", d.PeerId(), len(rd.CommittedEntries))
 
+		// Opening a transaction here to ensure all previously writes are visible.
 		for _, cb := range cbsForRead {
 			cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
 		}
