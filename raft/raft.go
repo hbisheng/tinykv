@@ -403,7 +403,7 @@ func (r *Raft) tick() {
 		if r.heartbeatElapsed == r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
 			// broadcast heartbeat messages to every peer except oneself
-			fmt.Print("broadcasting heartbeat due to tick\n")
+			fmt.Print("+++++broadcasting heartbeat due to tick\n")
 			r.broadcastHeartbeat()
 		}
 	}
@@ -720,17 +720,21 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		r.broadcastAppend()
 	case pb.MessageType_MsgAppendResponse:
 		if m.Reject {
-			// r.Prs[m.From].Next -= 1
-			prevNext := r.Prs[m.From].Next
+			// prevNext := r.Prs[m.From].Next
 			r.Prs[m.From].Next = m.Index
 			if r.Prs[m.From].Next <= r.Prs[m.From].Match {
-				// likely due to the fake match init???
-				panic(
-					fmt.Sprintf(
-						"[id=%d][term=%d] unexpected append rejection. prevNext: %d, asking for: %d, m.From: %d, r.Prs[m.From].Match:%d",
-						r.id, r.Term, prevNext, m.Index, m.From, r.Prs[m.From].Match,
-					),
-				)
+				// It's possible for Match to go backward.
+				// Match doesn't mean it will never change.
+
+				// reset match to 1 to enable probing.
+				// TestPersistPartition2B found this bug.
+				r.Prs[m.From].Match = 1
+				// panic(
+				// 	fmt.Sprintf(
+				// 		"[id=%d][term=%d] unexpected append rejection. prevNext: %d, asking for: %d, m.From: %d, r.Prs[m.From].Match:%d",
+				// 		r.id, r.Term, prevNext, m.Index, m.From, r.Prs[m.From].Match,
+				// 	),
+				// )
 			}
 			r.sendAppend(m.From)
 		} else {
@@ -849,7 +853,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 			To:      m.From,
 			From:    r.id,
 			Term:    r.Term,
-			Index:   m.Index, // Ask for a smaller index, the preceding entry
+			Index:   min(m.Index, r.RaftLog.LastIndex()+1), // Ask for a smaller index, the preceding entry
 			Reject:  true,
 		})
 		return

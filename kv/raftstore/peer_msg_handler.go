@@ -213,8 +213,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		}
 
 		if d.RaftGroup.Raft.State == raft.StateLeader {
-			// fmt.Println(toPrint)
-			log.Warn(toPrint)
+			fmt.Println(toPrint)
+			// log.Warn(toPrint)
 		}
 	}
 
