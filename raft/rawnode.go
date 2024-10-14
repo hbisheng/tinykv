@@ -146,7 +146,8 @@ func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
 
 	// Does a deep copy make a difference? seems no.
-	messages := []pb.Message{}
+	// TestRawNodeRestart2AC requires it to be nil if there's no message.
+	var messages []pb.Message
 	for _, msg := range rn.Raft.msgs {
 		messages = append(messages, msg)
 	}
