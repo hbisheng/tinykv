@@ -499,11 +499,10 @@ func (r *Raft) becomeLeader() {
 // Step the entrance of handle message, see `MessageType`
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
-	// if m.To != r.id {
-	// panic("bug bug bug in the framework")
-	// log.Warnf("wrong message to %d, target: %v, %v", r.id, m.To, m)
-	// return nil
-	// }
+	if m.To != 0 && m.To != r.id {
+		log.Errorf("msg id=%d->id=%d, but arrived at id=%d, %v", m.From, m.To, r.id, m)
+		panic("bug bug bug")
+	}
 
 	// Your Code Here (2A).
 	incomingTerm := m.Term
@@ -813,11 +812,6 @@ func (r *Raft) maybeAdvanceCommit() {
 
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
-	if m.To != 0 && m.To != r.id {
-		log.Warnf("wrong message to %d, target: %v, %v", r.id, m.To, m)
-		return
-	}
-
 	// Your Code Here (2A).
 	r.Lead = m.From
 	var toPrint string

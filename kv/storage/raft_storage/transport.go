@@ -28,6 +28,7 @@ func NewServerTransport(raftClient *RaftClient, snapScheduler chan<- worker.Task
 
 func (t *ServerTransport) Send(msg *raft_serverpb.RaftMessage) error {
 	storeID := msg.GetToPeer().GetStoreId()
+	// log.Warnf("ServerTransport t.SendStore(storeID, msg), storeID:%v msg:%v", storeID, msg)
 	t.SendStore(storeID, msg)
 	return nil
 }

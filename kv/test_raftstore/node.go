@@ -39,7 +39,7 @@ func NewMockTransport() *MockTransport {
 func (t *MockTransport) AddStore(storeID uint64, raftRouter message.RaftRouter, snapMgr *snap.SnapManager) {
 	t.Lock()
 	defer t.Unlock()
-
+	log.Warnf("AddStore, storeID:%d raftRouter:%v", storeID, raftRouter)
 	t.routers[storeID] = raftRouter
 	t.snapMgrs[storeID] = snapMgr
 }
@@ -118,6 +118,9 @@ func (t *MockTransport) Send(msg *raft_serverpb.RaftMessage) error {
 	if !found {
 		return errors.New(fmt.Sprintf("store %d is closed", toStore))
 	}
+
+	// log.Warnf("          (MockTransport) id=%v=>id=%v,  router:%v                            inner msg:%v",
+	// fromStore, toStore, router, *msg.Message)
 	router.SendRaftMessage(msg)
 
 	for _, filter := range t.filters {

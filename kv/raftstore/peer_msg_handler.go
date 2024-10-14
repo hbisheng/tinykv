@@ -195,7 +195,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	}
 
 	allPeers := d.peer.Region().GetPeers()
-	for _, msg := range rd.Messages {
+	for i := range rd.Messages {
+		msg := rd.Messages[i] // must take a copy, cannot use the iter reference directly. otherwise message can be wrong.
 		if err := d.ctx.trans.Send(
 			&rspb.RaftMessage{
 				RegionId:    d.peer.regionId,

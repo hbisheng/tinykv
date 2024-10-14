@@ -39,6 +39,9 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 		case <-closeCh:
 			return
 		case msg := <-rw.raftCh:
+			// if msg.Data != nil {
+			// 	log.Errorf("(raftWorker) receives from peerSender %v, msg.Data:%v", rw.raftCh, msg.Data)
+			// }
 			msgs = append(msgs, msg)
 		}
 		pending := len(rw.raftCh)

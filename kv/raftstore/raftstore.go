@@ -253,9 +253,11 @@ func (bs *Raftstore) start(
 	if err != nil {
 		return err
 	}
+	log.Warnf("bs.loadPeers() -> regionPeers: %v", regionPeers)
 
 	for _, peer := range regionPeers {
 		bs.router.register(peer)
+		log.Warnf("bs.router register, peerSender: %v, peer: %v", bs.router.peerSender, peer)
 	}
 	bs.startWorkers(regionPeers)
 	return nil
