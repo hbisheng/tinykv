@@ -205,7 +205,9 @@ func newRaft(c *Config) *Raft {
 	raftLog := newLog(c.Storage)
 	raftLog.committed = hardState.Commit
 	raftLog.applied = c.Applied
-	for len(raftLog.entries) <= int(raftLog.stabled) {
+
+	// for len(raftLog.entries) <= int(raftLog.stabled) {
+	for raftLog.LastIndex()+1 <= raftLog.stabled {
 		panic("weird logic triggered")
 		// raftLog.entries = append(raftLog.entries, pb.Entry{Data: []byte("dummy entry")})
 	}
@@ -213,8 +215,8 @@ func newRaft(c *Config) *Raft {
 	li, _ := c.Storage.LastIndex()
 
 	fmt.Printf(
-		"+++++[id=%d] new raft node created with peers:%+v, hardState:%v, confState:%v, first index:%d, last index:%d, raftLog.entries: %d\n",
-		c.ID, prs, hardState, confState, fi, li, len(raftLog.entries),
+		"+++++[id=%d] new raft node created with peers:%+v, hardState:%v, confState:%v, first index:%d, last index:%d, l.latestEntryIndex:%d, raftLog.entries: %d\n",
+		c.ID, prs, hardState, confState, fi, li, raftLog.latestSnapIndex, len(raftLog.entries),
 	)
 	for i, e := range raftLog.entries {
 		fmt.Printf("+++++init entries[%d] %+v\n", i, e)
@@ -304,17 +306,24 @@ func (r *Raft) sendAppend(to uint64) bool {
 	entries := []*pb.Entry{}
 	if r.Prs[to].Match == 0 {
 		// send everything. required by TestLeaderCommitPrecedingEntries2AB
-		for i := 1; int(i) < len(r.RaftLog.entries); i++ {
-			entries = append(entries, &r.RaftLog.entries[i])
+
+		// for i := 1; int(i) < len(r.RaftLog.entries); i++ {
+		// 	entries = append(entries, &r.RaftLog.entries[i])
+		// }
+		for _, entry := range r.RaftLog.allEntries() {
+			entry := entry
+			entries = append(entries, &entry)
 		}
 	} else if r.Prs[to].Next == r.Prs[to].Match+1 {
 		// Bulk send
-		for i := r.Prs[to].Next; int(i) < len(r.RaftLog.entries); i++ {
-			entries = append(entries, &r.RaftLog.entries[i])
+		for i := r.Prs[to].Next; i <= r.RaftLog.LastIndex(); i++ {
+			entry := r.RaftLog.entry(i)
+			entries = append(entries, &entry)
 		}
 	} else {
 		// Probing mode
-		entries = append(entries, &r.RaftLog.entries[r.Prs[to].Next])
+		entry := r.RaftLog.entry(r.Prs[to].Next)
+		entries = append(entries, &entry)
 	}
 
 	if len(entries) == 0 {
@@ -334,15 +343,18 @@ func (r *Raft) sendAppend(to uint64) bool {
 	}
 
 	// dedup?
-	logTerm := r.RaftLog.entries[entries[0].Index-1].Term
 	logIndex := entries[0].Index - 1
+	logTerm := r.RaftLog.mustTerm(logIndex)
+
 	r.msgs = append(r.msgs, pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
 		To:      to,
 		From:    r.id,
 		Term:    r.Term,
-		LogTerm: r.RaftLog.entries[entries[0].Index-1].Term,
-		Index:   entries[0].Index - 1, // This might be -1
+
+		LogTerm: logTerm,
+		Index:   logIndex,
+
 		Entries: entries,
 		Commit:  r.RaftLog.committed,
 	})
@@ -557,12 +569,12 @@ func (r *Raft) Step(m pb.Message) error {
 			"+++++[id=%d][term=%d] received vote request from %d at term %d, m.Index: %d, m.LogTerm:%d, my li:%d, my li term:%d, r.Vote: %d\n",
 			r.id, r.Term, m.From, m.Term,
 			m.Index, m.LogTerm,
-			r.RaftLog.LastIndex(), r.RaftLog.entries[r.RaftLog.LastIndex()].Term,
+			r.RaftLog.LastIndex(), r.RaftLog.mustTerm(r.RaftLog.LastIndex()),
 			r.Vote,
 		)
 
 		prevVote := r.Vote
-		if r.Vote == None && isUpToDate(m.Index, m.LogTerm, r.RaftLog.LastIndex(), r.RaftLog.entries[r.RaftLog.LastIndex()].Term) {
+		if r.Vote == None && isUpToDate(m.Index, m.LogTerm, r.RaftLog.LastIndex(), r.RaftLog.mustTerm(r.RaftLog.LastIndex())) {
 			r.Vote = m.From
 		}
 
@@ -725,7 +737,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 
 		toPrint += fmt.Sprintf(
 			"+++++[id=%d][term=%d] post-propose latest entries, last index = %d:\n",
-			r.id, r.Term, r.RaftLog.entries[len(r.RaftLog.entries)-1].Index)
+			r.id, r.Term, r.RaftLog.LastIndex())
 		// for i, e := range r.RaftLog.entries {
 		// 	var entryStr string
 		// 	if e.Data == nil {
@@ -809,7 +821,8 @@ func (r *Raft) maybeAdvanceCommit() {
 	indexes := []uint64{}
 	for id, pr := range r.Prs {
 		if id == r.id {
-			indexes = append(indexes, uint64(len(r.RaftLog.entries)-1))
+			// indexes = append(indexes, uint64(len(r.RaftLog.entries)-1))
+			indexes = append(indexes, r.RaftLog.LastIndex())
 		} else {
 			indexes = append(indexes, pr.Match)
 		}
@@ -825,7 +838,7 @@ func (r *Raft) maybeAdvanceCommit() {
 	canCommit := uint64(indexes[majorityPos])
 
 	// A leader can only commit the entry that belongs to its term.
-	if canCommit > r.RaftLog.committed && r.RaftLog.entries[canCommit].Term == r.Term {
+	if canCommit > r.RaftLog.committed && r.RaftLog.mustTerm(canCommit) == r.Term {
 		toPrint += fmt.Sprintf(
 			"+++++[id=%d][term=%d] commit %d -> %d\n",
 			r.id, r.Term, r.RaftLog.committed, canCommit)
@@ -893,7 +906,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 	toPrint += fmt.Sprintf(
 		"+++++[id=%d][term=%d] post-append latest entries, last index=%d:\n",
-		r.id, r.Term, r.RaftLog.entries[len(r.RaftLog.entries)-1].Index)
+		r.id, r.Term, r.RaftLog.LastIndex())
 	// for i, e := range r.RaftLog.entries {
 	// 	var entryStr string
 	// 	if e.Data == nil {
@@ -956,7 +969,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 
 		Commit:  r.RaftLog.committed,
 		Index:   r.RaftLog.LastIndex(),
-		LogTerm: r.RaftLog.entries[r.RaftLog.LastIndex()].Term,
+		LogTerm: r.RaftLog.mustTerm(r.RaftLog.LastIndex()),
 	})
 }
 
@@ -980,7 +993,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	r.RaftLog.stabled = snapIndex
 
 	r.RaftLog.entries = []pb.Entry{
-		{Index: snapIndex, Term: snapTerm, Data: []byte("ooo")}, // dummy entry
+		{Index: snapIndex, Term: snapTerm, Data: []byte("oooooo")}, // dummy entry
 	}
 	r.RaftLog.pendingSnapshot = m.Snapshot
 

@@ -71,11 +71,15 @@ func newLog(storage Storage) *RaftLog {
 		panic("storage.LastIndex() " + err.Error())
 	}
 	entries := []pb.Entry{{Index: 0, Data: []byte("oooooo")}}
+
+	var latestSnapIndex uint64
 	// padding before first index
 	if firstIndex > 0 {
-		for i := 1; uint64(i) < firstIndex; i++ {
-			entries = append(entries, pb.Entry{Index: uint64(i), Data: []byte("oooooo")}) // dummy entry at position 0.
-		}
+		latestSnapIndex = firstIndex - 1
+		entries[0].Index = latestSnapIndex
+		// for i := 1; uint64(i) < firstIndex; i++ {
+		// 	entries = append(entries, pb.Entry{Index: uint64(i), Data: []byte("oooooo")}) // dummy entry at position 0.
+		// }
 	}
 
 	if firstIndex < lastIndex+1 {
@@ -95,7 +99,8 @@ func newLog(storage Storage) *RaftLog {
 	// 	)
 	// }
 
-	if lastIndex != uint64(len(entries)-1) {
+	// if lastIndex != uint64(len(entries)-1) {
+	if lastIndex != entries[len(entries)-1].Index {
 		panic(
 			fmt.Sprintf(
 				"unexpected init, fi:%d, li:%d, len(entries):%d, entries[len(entries)-1].Index: %d",
@@ -112,7 +117,7 @@ func newLog(storage Storage) *RaftLog {
 	// fmt.Printf("+++++newLog hardState: %+v, confState: %+v, entries: %+v\n",
 	// 	hardState, confState, entries)
 
-	stabled := uint64(len(entries) - 1)
+	stabled := latestSnapIndex + uint64(len(entries)-1)
 	if stabled != lastIndex {
 		panic(
 			fmt.Sprintf("weird logic triggered, fi: %d, li: %d, stabled: %d, entries: %v",
@@ -121,9 +126,10 @@ func newLog(storage Storage) *RaftLog {
 		// stabled = lastIndex
 	}
 	return &RaftLog{
-		storage: storage,
-		entries: entries,
-		stabled: stabled,
+		storage:         storage,
+		entries:         entries,
+		stabled:         stabled,
+		latestSnapIndex: latestSnapIndex,
 	}
 }
 
@@ -155,14 +161,21 @@ func (l *RaftLog) appendEntries(m pb.Message) {
 
 	// append empty entry on leader but not on a follower.
 	if len(m.Entries) == 0 && m.MsgType == pb.MessageType_MsgPropose {
-		if m.Index+1 == uint64(len(l.entries)) {
+		// This is for proposing a no-op entry?
+
+		// if m.Index+1 == uint64(len(l.entries)) {
+		if m.Index == l.LastIndex() {
 			newEntry := pb.Entry{
 				EntryType: pb.EntryType_EntryNormal,
 				Term:      m.Term,
-				Index:     uint64(len(l.entries)),
+				Index:     l.LastIndex() + 1,
 				Data:      nil,
 			}
 			l.entries = append(l.entries, newEntry)
+
+			if l.entries[len(l.entries)-1].Index != l.latestSnapIndex+uint64(len(l.entries))-1 {
+				panic(fmt.Sprintf("%+v", l.entries))
+			}
 		}
 		return
 	}
@@ -172,7 +185,8 @@ func (l *RaftLog) appendEntries(m pb.Message) {
 		// Make sure related fields are set
 		index := e.Index
 		if index == 0 {
-			index = uint64(len(l.entries))
+			// index = uint64(len(l.entries))
+			index = l.LastIndex() + 1
 		}
 
 		newEntry := pb.Entry{
@@ -182,17 +196,17 @@ func (l *RaftLog) appendEntries(m pb.Message) {
 			Data:      e.Data,
 		}
 
-		if e.Index != 0 && e.Index < uint64(len(l.entries)) {
+		if e.Index != 0 && e.Index <= l.LastIndex() {
 			// Consider duplicate entries.
-			if e.Term != l.entries[e.Index].Term {
+			if e.Term != l.entry(e.Index).Term {
 				toPrint += fmt.Sprintf(
-					"+++++overwriting existing entry, e.Index=%d, len(l.entries)=%d, old:%v, new:%v\n",
-					e.Index, len(l.entries), l.entries[e.Index], newEntry)
+					"+++++overwriting existing entry, e.Index=%d, l.latestSnapIndex=%d, len(l.entries)=%d, old:%v, new:%v\n",
+					e.Index, l.latestSnapIndex, len(l.entries), l.entry(e.Index), newEntry)
 
 				// Override
-				l.entries[e.Index] = newEntry
+				l.entries[e.Index-l.latestSnapIndex] = newEntry
 				// Truncate
-				l.entries = l.entries[:e.Index+1]
+				l.entries = l.entries[:e.Index-l.latestSnapIndex+1]
 				if l.stabled >= e.Index {
 					l.stabled = e.Index - 1
 				}
@@ -219,8 +233,8 @@ func (l *RaftLog) appendEntries(m pb.Message) {
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
 	res := []pb.Entry{}
-	for i := int(l.stabled + 1); i < len(l.entries); i++ {
-		res = append(res, l.entries[i])
+	for i := l.stabled + 1; i <= l.LastIndex(); i++ {
+		res = append(res, l.entry(i))
 	}
 	return res
 }
@@ -230,7 +244,7 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
 	res := []pb.Entry{}
 	for i := l.applied + 1; i <= l.committed; i++ {
-		res = append(res, l.entries[i])
+		res = append(res, l.entry(i))
 	}
 	return res
 }
@@ -243,14 +257,41 @@ func (l *RaftLog) LastIndex() uint64 {
 	} else {
 		panic("there should always be some entries")
 	}
-	// return 0
-	// return l.latestSnapIndex
+}
+
+func (l *RaftLog) entry(i uint64) pb.Entry {
+	// i == l.latestSnapIndex is not ok, you can get the term but not the entry.
+	if i <= l.latestSnapIndex {
+		panic(fmt.Sprintf("asking entry for idx=%d while latestSnapIndex=%d", i, l.latestSnapIndex))
+	}
+
+	if i-l.latestSnapIndex >= uint64(len(l.entries)) {
+		panic(
+			fmt.Sprintf("asking entry for idx=%d while latestSnapIndex=%d and len(l.entries)=%d",
+				i, l.latestSnapIndex, len(l.entries)),
+		)
+	}
+
+	return l.entries[i-l.latestSnapIndex]
+}
+
+func (l *RaftLog) mustTerm(i uint64) uint64 {
+	term, err := l.Term(i)
+	if err != nil {
+		panic(err.Error())
+	}
+	return term
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
-	if i-l.latestSnapIndex < uint64(len(l.entries)) {
-		return l.entries[i-l.latestSnapIndex].Term, nil
+	if i < l.latestSnapIndex {
+		panic(fmt.Sprintf("asking term for idx=%d while latestSnapIndex=%d", i, l.latestSnapIndex))
 	}
-	return 0, errors.New("no entry")
+
+	if i-l.latestSnapIndex >= uint64(len(l.entries)) {
+		return 0, errors.New("no entry")
+	}
+
+	return l.entries[i-l.latestSnapIndex].Term, nil
 }

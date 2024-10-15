@@ -319,7 +319,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
-	fmt.Printf("====================> [id=%d] receive propose command, header: %v, requests: %v, admin_req: %v \n",
+	fmt.Printf("====================> +++++[id=%d] receive propose command, header: %v, requests: %v, admin_req: %v \n",
 		d.PeerId(), msg.Header, msg.Requests, msg.AdminRequest)
 
 	cmdRequestBytes, err := msg.Marshal()
