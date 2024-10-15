@@ -2,6 +2,7 @@ package raftstore
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -77,6 +78,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// 	fmt.Print(toPrint)
 	// }
 
+	if rd.Snapshot.Metadata != nil {
+		panic(fmt.Sprintf("we got a snapshot!!! %v", rd.Snapshot))
+	}
+
 	_, err := d.peer.peerStorage.SaveReadyState(&rd)
 	if err != nil {
 		panic("SaveReadyState returned error: %s" + err.Error())
@@ -109,6 +114,33 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			err := proto.Unmarshal(e.Data, cmdRequest)
 			if err != nil {
 				panic(err.Error())
+			}
+
+			// Process admin request first.
+			if cmdRequest.AdminRequest != nil {
+				if cmdRequest.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_CompactLog {
+					request := cmdRequest.AdminRequest.CompactLog
+
+					d.peerStorage.applyState.TruncatedState.Index = request.CompactIndex
+					d.peerStorage.applyState.TruncatedState.Term = request.CompactTerm
+					// Raft apply state will be persisted into Raft KV later.
+
+					postWriteFuncs = append(postWriteFuncs, func() {
+						// Update the raft log state and assume everything <= compact index is gone.
+						d.peer.RaftGroup.Raft.CompactLog(request.CompactIndex)
+
+						// schedule the truncate task.
+						// check something using LastCompactedIdx?
+						// LastCompactedIdx is the first available index after the last compaction
+						log.Warnf("+++++ scheduled compact log job with idx:%d", request.CompactIndex)
+						if request.CompactIndex >= d.LastCompactedIdx {
+							d.ScheduleCompactLog(request.CompactIndex)
+						}
+					})
+				} else {
+					panic("unexpected admin request type")
+				}
+				continue
 			}
 
 			cmdResp := newCmdResp()
@@ -213,7 +245,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		}
 
 		if d.RaftGroup.Raft.State == raft.StateLeader {
-			fmt.Println(toPrint)
+			fmt.Print(toPrint)
 			// log.Warn(toPrint)
 		}
 	}
@@ -230,10 +262,12 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				RegionEpoch: &metapb.RegionEpoch{},
 			},
 		); err != nil {
-			log.Warnf(
-				"d.ctx.trans.Send() id=%d->id=%d msg: %v, returned error: %s",
-				msg.From, msg.To, msg, err.Error(),
-			)
+			if !strings.Contains(err.Error(), "is dropped") {
+				log.Warnf(
+					"d.ctx.trans.Send() id=%d->id=%d msg: %v, returned error: %s",
+					msg.From, msg.To, msg, err.Error(),
+				)
+			}
 		}
 	}
 
@@ -319,8 +353,10 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
-	fmt.Printf("====================> +++++[id=%d] receive propose command, header: %v, requests: %v, admin_req: %v \n",
-		d.PeerId(), msg.Header, msg.Requests, msg.AdminRequest)
+	log.Warnf(
+		"====================> +++++[id=%d] receive propose command, header: %v, requests: %v, admin_req: %v \n",
+		d.PeerId(), msg.Header, msg.Requests, msg.AdminRequest,
+	)
 
 	cmdRequestBytes, err := msg.Marshal()
 	if err != nil {

@@ -22,6 +22,7 @@ import (
 
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"go.etcd.io/etcd/raft"
 )
 
 // None is a placeholder node ID used when there is no leader.
@@ -206,6 +207,10 @@ func newRaft(c *Config) *Raft {
 	raftLog.committed = hardState.Commit
 	raftLog.applied = c.Applied
 
+	if raftLog.latestSnapIndex > 0 {
+		raftLog.applied = max(raftLog.applied, raftLog.latestSnapIndex)
+	}
+
 	// for len(raftLog.entries) <= int(raftLog.stabled) {
 	for raftLog.LastIndex()+1 <= raftLog.stabled {
 		panic("weird logic triggered")
@@ -283,23 +288,47 @@ func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 
 	if r.Prs[to].Next <= r.RaftLog.latestSnapIndex {
-		fmt.Printf("+++++[id=%d][term=%d] sending snap to %d, next=%d, latestSnapIndex=%d\n",
-			r.id, r.Term, to, r.Prs[to].Next, r.RaftLog.latestSnapIndex)
-
-		logTerm, err := r.RaftLog.Term(r.RaftLog.committed)
+		// send a snapshot that contains all the applied data.
+		snap, err := r.RaftLog.storage.Snapshot()
 		if err != nil {
-			panic(fmt.Sprintf("term not found for committed entry, idx=%d", r.RaftLog.committed))
+			if errors.Is(err, ErrSnapshotTemporarilyUnavailable) {
+				fmt.Printf("+++++[id=%d][term=%d] generating snap for id=%d (next=%d,match=%d) latestSnapIndex=%d, not available yet\n",
+					r.id, r.Term, to, r.Prs[to].Next, r.Prs[to].Match, r.RaftLog.latestSnapIndex)
+				return false
+			} else {
+				// fmt.Printf("Error type: %T, value: %+v, addr: %p\n", err, err, err)
+				// fmt.Printf("Error type: %T, value: %+v, addr: %p\n", raft.ErrSnapshotTemporarilyUnavailable, raft.ErrSnapshotTemporarilyUnavailable, raft.ErrSnapshotTemporarilyUnavailable)
+				panic(fmt.Sprintf("err: %+v, %v", err, err == raft.ErrSnapshotTemporarilyUnavailable))
+			}
 		}
+
+		// nodes := []uint64{}
+		// for n := range r.Prs {
+		// 	nodes = append(nodes, n)
+		// }
+
 		r.msgs = append(r.msgs, pb.Message{
 			MsgType: pb.MessageType_MsgSnapshot,
 			To:      to,
 			From:    r.id,
 			Term:    r.Term,
-			LogTerm: logTerm,
-			Index:   r.RaftLog.committed, // This might be -1
+
+			LogTerm: snap.Metadata.Term,
+			Index:   snap.Metadata.Index,
 			// Entries: entries,
-			Commit: r.RaftLog.committed,
+			// Commit: r.RaftLog.committed,
+			// Snapshot: &pb.Snapshot{
+			// 	Metadata: &pb.SnapshotMetadata{
+			// 		ConfState: &pb.ConfState{Nodes: nodes},
+			// 		Index:     snapIdx,
+			// 		Term:      snapTerm,
+			// 	},
+			// },
+			Snapshot: &snap,
 		})
+
+		fmt.Printf("+++++[id=%d][term=%d] sending snap %v to %d (next=%d,match=%d) latestSnapIndex=%d\n",
+			r.id, r.Term, snap, to, r.Prs[to].Next, r.Prs[to].Match, r.RaftLog.latestSnapIndex)
 		return true
 	}
 
@@ -831,8 +860,8 @@ func (r *Raft) maybeAdvanceCommit() {
 
 	var toPrint string
 	toPrint += fmt.Sprintf(
-		"+++++[id=%d][term=%d] on leader, commit indexes %v, my commit:%v\n",
-		r.id, r.Term, indexes, r.RaftLog.committed)
+		"+++++[id=%d][term=%d] on leader, commit indexes %v, my commit:%v, r.Prs: %v\n",
+		r.id, r.Term, indexes, r.RaftLog.committed, r.Prs)
 
 	majorityPos := len(indexes) / 2
 	canCommit := uint64(indexes[majorityPos])
@@ -984,6 +1013,10 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		return
 	}
 
+	fmt.Printf("+++++[id=%d][term=%d] restored snapshot, snap index:%d, snap term=%d, prev committed:%d, prev applied:%d, prev stabled:%d\n",
+		r.id, r.Term, snapIndex, snapTerm,
+		r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.stabled,
+	)
 	r.Term = snapTerm
 	r.Lead = m.From
 
@@ -1004,6 +1037,10 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	}
 	r.Prs = newPrs
 
+}
+
+func (r *Raft) CompactLog(idx uint64) {
+	r.RaftLog.maybeCompact(idx)
 }
 
 // addNode add a new node to raft group

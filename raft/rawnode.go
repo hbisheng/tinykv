@@ -151,10 +151,16 @@ func (rn *RawNode) Ready() Ready {
 	for _, msg := range rn.Raft.msgs {
 		messages = append(messages, msg)
 	}
+
+	snap := pb.Snapshot{}
+	if rn.Raft.RaftLog.pendingSnapshot != nil {
+		snap = *rn.Raft.RaftLog.pendingSnapshot
+	}
 	return Ready{
 		Entries:          rn.Raft.RaftLog.unstableEntries(),
 		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
 		Messages:         messages,
+		Snapshot:         snap,
 	}
 }
 
@@ -170,6 +176,10 @@ func (rn *RawNode) HasReady() bool {
 	}
 
 	if len(rn.Raft.msgs) != 0 {
+		return true
+	}
+
+	if rn.Raft.RaftLog.pendingSnapshot != nil {
 		return true
 	}
 

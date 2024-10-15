@@ -136,8 +136,22 @@ func newLog(storage Storage) *RaftLog {
 // We need to compact the log entries in some point of time like
 // storage compact stabled log entries prevent the log entries
 // grow unlimitedly in memory
-func (l *RaftLog) maybeCompact() {
+func (l *RaftLog) maybeCompact(idx uint64) {
 	// Your Code Here (2C).
+	if idx <= l.latestSnapIndex {
+		return
+	}
+
+	if idx >= l.LastIndex() {
+		panic(fmt.Sprintf("trying to compact to idx=%d while last index is %d", idx, l.LastIndex()))
+	}
+
+	if idx > l.applied {
+		panic(fmt.Sprintf("trying to compact to idx=%d while applied indx is %d", idx, l.applied))
+	}
+
+	l.entries = l.entries[idx-l.latestSnapIndex:]
+	l.latestSnapIndex = idx
 }
 
 // allEntries return all the entries not compacted.
@@ -286,7 +300,7 @@ func (l *RaftLog) mustTerm(i uint64) uint64 {
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	if i < l.latestSnapIndex {
-		panic(fmt.Sprintf("asking term for idx=%d while latestSnapIndex=%d", i, l.latestSnapIndex))
+		return 0, errors.New("entry compacted")
 	}
 
 	if i-l.latestSnapIndex >= uint64(len(l.entries)) {
