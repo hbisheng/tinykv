@@ -247,6 +247,6 @@ func TestRawNodeRestartFromSnapshot2C(t *testing.T) {
 		rawNode.Advance(rd)
 	}
 	if rawNode.HasReady() {
-		t.Errorf("unexpected Ready: %+v", rawNode.HasReady())
+		t.Errorf("unexpected Ready: %+v, Rd: %v", rawNode.HasReady(), rawNode.Ready())
 	}
 }

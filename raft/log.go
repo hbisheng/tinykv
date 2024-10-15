@@ -52,10 +52,10 @@ type RaftLog struct {
 
 	// the incoming unstable snapshot, if any.
 	// (Used in 2C)
-	// pendingSnapshot *pb.Snapshot
+	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
-	// unstableEntries []pb.Entry
+	latestSnapIndex uint64
 }
 
 // newLog returns log using the given storage. It recovers the log
@@ -70,11 +70,11 @@ func newLog(storage Storage) *RaftLog {
 	if err != nil {
 		panic("storage.LastIndex() " + err.Error())
 	}
-	entries := []pb.Entry{{Index: 0, Data: []byte("ooo")}}
+	entries := []pb.Entry{{Index: 0, Data: []byte("oooooo")}}
 	// padding before first index
 	if firstIndex > 0 {
 		for i := 1; uint64(i) < firstIndex; i++ {
-			entries = append(entries, pb.Entry{Index: uint64(i), Data: []byte("ooo")}) // dummy entry at position 0.
+			entries = append(entries, pb.Entry{Index: uint64(i), Data: []byte("oooooo")}) // dummy entry at position 0.
 		}
 	}
 
@@ -239,15 +239,18 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
 	if len(l.entries)-1 >= 0 {
-		return uint64(len(l.entries) - 1)
+		return l.latestSnapIndex + uint64(len(l.entries)-1)
+	} else {
+		panic("there should always be some entries")
 	}
-	return 0
+	// return 0
+	// return l.latestSnapIndex
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
-	if i < uint64(len(l.entries)) {
-		return l.entries[i].Term, nil
+	if i-l.latestSnapIndex < uint64(len(l.entries)) {
+		return l.entries[i-l.latestSnapIndex].Term, nil
 	}
 	return 0, errors.New("no entry")
 }

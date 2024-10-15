@@ -207,12 +207,14 @@ func newRaft(c *Config) *Raft {
 	raftLog.applied = c.Applied
 	for len(raftLog.entries) <= int(raftLog.stabled) {
 		panic("weird logic triggered")
-		raftLog.entries = append(raftLog.entries, pb.Entry{Data: []byte("dummy entry")})
+		// raftLog.entries = append(raftLog.entries, pb.Entry{Data: []byte("dummy entry")})
 	}
 
+	li, _ := c.Storage.LastIndex()
+
 	fmt.Printf(
-		"+++++[id=%d] new raft node created with peers: %v, hardState: %v, raftLog.entries: %d\n",
-		c.ID, prs, hardState, len(raftLog.entries),
+		"+++++[id=%d] new raft node created with peers:%+v, hardState:%v, confState:%v, first index:%d, last index:%d, raftLog.entries: %d\n",
+		c.ID, prs, hardState, confState, fi, li, len(raftLog.entries),
 	)
 	for i, e := range raftLog.entries {
 		fmt.Printf("+++++init entries[%d] %+v\n", i, e)
@@ -277,8 +279,29 @@ func (r *Raft) broadcastAppend() error {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	entries := []*pb.Entry{}
 
+	if r.Prs[to].Next <= r.RaftLog.latestSnapIndex {
+		fmt.Printf("+++++[id=%d][term=%d] sending snap to %d, next=%d, latestSnapIndex=%d\n",
+			r.id, r.Term, to, r.Prs[to].Next, r.RaftLog.latestSnapIndex)
+
+		logTerm, err := r.RaftLog.Term(r.RaftLog.committed)
+		if err != nil {
+			panic(fmt.Sprintf("term not found for committed entry, idx=%d", r.RaftLog.committed))
+		}
+		r.msgs = append(r.msgs, pb.Message{
+			MsgType: pb.MessageType_MsgSnapshot,
+			To:      to,
+			From:    r.id,
+			Term:    r.Term,
+			LogTerm: logTerm,
+			Index:   r.RaftLog.committed, // This might be -1
+			// Entries: entries,
+			Commit: r.RaftLog.committed,
+		})
+		return true
+	}
+
+	entries := []*pb.Entry{}
 	if r.Prs[to].Match == 0 {
 		// send everything. required by TestLeaderCommitPrecedingEntries2AB
 		for i := 1; int(i) < len(r.RaftLog.entries); i++ {
@@ -621,6 +644,10 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 		}
 	case pb.MessageType_MsgAppend:
 		r.becomeFollower(m.Term, m.From)
+		r.handleAppendEntries(m)
+	case pb.MessageType_MsgSnapshot:
+		r.becomeFollower(m.Term, m.From)
+		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.becomeFollower(m.Term, m.From)
 		r.handleHeartbeat(m)
@@ -655,6 +682,8 @@ func (r *Raft) stepFollower(m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
 	}
@@ -934,6 +963,34 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	snapIndex := m.Snapshot.Metadata.Index
+	snapTerm := m.Snapshot.Metadata.Term
+	if snapIndex <= r.RaftLog.committed || snapTerm < r.Term {
+		fmt.Printf("+++++[id=%d][term=%d] ignore stale snapshot, snap index:%d, snap term=%d, my committed:%d\n",
+			r.id, r.Term, snapIndex, snapTerm, r.RaftLog.committed)
+		return
+	}
+
+	r.Term = snapTerm
+	r.Lead = m.From
+
+	r.RaftLog.latestSnapIndex = snapIndex
+	r.RaftLog.committed = snapIndex
+	r.RaftLog.applied = snapIndex
+	r.RaftLog.stabled = snapIndex
+
+	r.RaftLog.entries = []pb.Entry{
+		{Index: snapIndex, Term: snapTerm, Data: []byte("ooo")}, // dummy entry
+	}
+	r.RaftLog.pendingSnapshot = m.Snapshot
+
+	confState := m.Snapshot.Metadata.ConfState
+	newPrs := make(map[uint64]*Progress)
+	for _, n := range confState.Nodes {
+		newPrs[n] = &Progress{Next: snapIndex}
+	}
+	r.Prs = newPrs
+
 }
 
 // addNode add a new node to raft group
