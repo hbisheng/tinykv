@@ -87,7 +87,8 @@ type peer struct {
 
 	// Index of last scheduled compacted raft log.
 	// (Used in 2C)
-	LastCompactedIdx uint64
+	LastCompactedIdx    uint64
+	scheduledCompactIdx uint64
 
 	// Cache the peers information from other stores
 	// when sending raft messages to other peers, it's used to get the store id of target peer

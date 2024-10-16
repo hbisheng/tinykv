@@ -391,7 +391,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 
 	var toPrint string
 	toPrint += fmt.Sprintf(
-		"+++++[id=%d][term=%d] add MsgAppend to r.msgs, (logTerm=%d, logIndex=%d) "+
+		"+++++[id=%d][term=%d] add MsgAppend to r.msgs, (prev Term=%d,Index=%d) "+
 			"[%d..%d] entries ==> id=%d (next=%d,match=%d), my last_index=%d:\n",
 		r.id, r.Term, logTerm, logIndex,
 		entries[0].Index, entries[len(entries)-1].Index, to, r.Prs[to].Next, r.Prs[to].Match, r.RaftLog.LastIndex(),
@@ -851,20 +851,24 @@ func (r *Raft) stepLeader(m pb.Message) error {
 
 func (r *Raft) maybeAdvanceCommit() {
 	indexes := []uint64{}
+	prss := []string{}
 	for id, pr := range r.Prs {
+		var idx uint64
 		if id == r.id {
-			// indexes = append(indexes, uint64(len(r.RaftLog.entries)-1))
-			indexes = append(indexes, r.RaftLog.LastIndex())
+			idx = r.RaftLog.LastIndex()
 		} else {
-			indexes = append(indexes, pr.Match)
+			idx = pr.Match
 		}
+		indexes = append(indexes, idx)
+		prss = append(prss, fmt.Sprintf("%v=>%v", id, idx))
 	}
 	sort.Slice(indexes, func(i, j int) bool { return indexes[i] > indexes[j] }) // descending
+	sort.Strings(prss)
 
 	var toPrint string
 	toPrint += fmt.Sprintf(
-		"+++++[id=%d][term=%d] on leader, commit indexes %v, my commit:%v, r.Prs: %v\n",
-		r.id, r.Term, indexes, r.RaftLog.committed, r.Prs)
+		"+++++[id=%d][term=%d] on leader, r.Prs:%+v, my commit:%v\n",
+		r.id, r.Term, prss, r.RaftLog.committed)
 
 	majorityPos := len(indexes) / 2
 	canCommit := uint64(indexes[majorityPos])
@@ -911,17 +915,16 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 			entriesStr = "0 entry"
 		} else {
 			entriesStr = fmt.Sprintf(
-				"(idx=%d,term=%d)~(idx=%d,term=%d), %v",
+				"(idx=%d,term=%d)~(idx=%d,term=%d)",
 				m.Entries[0].Index, m.Entries[0].Term,
 				m.Entries[len(m.Entries)-1].Index, m.Entries[len(m.Entries)-1].Term,
-				m,
 			)
 		}
 
 		// reject
 		fmt.Printf(
-			"+++++[id=%d][term=%d] follower reject, m.Index=%d, m.LogTerm=%d, entries=%s, my log term=%v err=%v\n",
-			r.id, r.Term, m.Index, m.LogTerm, entriesStr, term, err)
+			"+++++[id=%d][term=%d] follower reject, m.Index=%d, m.LogTerm=%d, entries=%s, my log term=%v, my latest snap idx=%d, my li=%d, err=%v\n",
+			r.id, r.Term, m.Index, m.LogTerm, entriesStr, term, r.RaftLog.latestSnapIndex, r.RaftLog.LastIndex(), err)
 		r.msgs = append(r.msgs, pb.Message{
 			MsgType: pb.MessageType_MsgAppendResponse,
 			To:      m.From,
@@ -1044,6 +1047,9 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 }
 
 func (r *Raft) CompactLog(idx uint64) {
+	log.Warnf(
+		"[id=%d][term=%d] calling CompactLog, compact idx:%d, latestSnapIdx: %d, last idx: %d, committed:%d, applied:%v",
+		r.id, r.Term, idx, r.RaftLog.latestSnapIndex, r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.applied)
 	r.RaftLog.maybeCompact(idx)
 }
 

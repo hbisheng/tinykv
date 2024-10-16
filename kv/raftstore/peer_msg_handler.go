@@ -109,6 +109,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	proposalReponses := []*raft_cmdpb.RaftCmdResponse{}
 	cbsForRead := []*message.Callback{}
 
+	log.Warnf("+++++ [id=%v] len(rd.CommittedEntries):%d", len(rd.CommittedEntries))
 	if len(rd.CommittedEntries) > 0 {
 		for _, e := range rd.CommittedEntries {
 			// find the proposal, apply it, and remove, respond to the client.
@@ -130,27 +131,35 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				panic(err.Error())
 			}
 
+			log.Warnf("+++++ [id=%v] processing committed entry %d, proposal:%v", d.Meta.Id, e.Index, proposal)
 			// Process admin request first.
 			if cmdRequest.AdminRequest != nil {
 				if cmdRequest.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_CompactLog {
 					request := cmdRequest.AdminRequest.CompactLog
 
-					d.peerStorage.applyState.TruncatedState.Index = request.CompactIndex
-					d.peerStorage.applyState.TruncatedState.Term = request.CompactTerm
-					// Raft apply state will be persisted into Raft KV later.
+					// there's no need to compact if compact idx <= latest snap idx
+					if request.CompactIndex > d.peer.RaftGroup.Raft.RaftLog.LatestSnapIndex() && request.CompactIndex > d.scheduledCompactIdx {
+						// d.scheduledCompactIdx is used to dedup compaction requests that come in the same batch.
+						// the actual compaction (the change of latest snap idx) won't come until the batch completes.
+						d.scheduledCompactIdx = request.CompactIndex
 
-					postWriteFuncs = append(postWriteFuncs, func() {
-						// Update the raft log state and assume everything <= compact index is gone.
-						d.peer.RaftGroup.Raft.CompactLog(request.CompactIndex)
+						d.peerStorage.applyState.TruncatedState.Index = request.CompactIndex
+						d.peerStorage.applyState.TruncatedState.Term = request.CompactTerm
+						// Raft apply state will be persisted into Raft KV later.
 
-						// schedule the truncate task.
-						// check something using LastCompactedIdx?
-						// LastCompactedIdx is the first available index after the last compaction
-						log.Warnf("+++++ scheduled compact log job with idx:%d", request.CompactIndex)
-						if request.CompactIndex >= d.LastCompactedIdx {
-							d.ScheduleCompactLog(request.CompactIndex)
-						}
-					})
+						log.Warnf("+++++ [id=%v] post write fn: scheduled compact log job (proposal=%d) with compact idx:%d", d.Meta.Id, e.Index, request.CompactIndex)
+						postWriteFuncs = append(postWriteFuncs, func() {
+							// Update the raft log state and assume everything <= compact index is gone.
+							d.peer.RaftGroup.Raft.CompactLog(request.CompactIndex)
+
+							// schedule the truncate task.
+							// check something using LastCompactedIdx?
+							// LastCompactedIdx is the first available index after the last compaction
+							if request.CompactIndex >= d.LastCompactedIdx {
+								d.ScheduleCompactLog(request.CompactIndex)
+							}
+						})
+					}
 				} else {
 					panic("unexpected admin request type")
 				}
@@ -164,7 +173,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				if r.CmdType == raft_cmdpb.CmdType_Put {
 					kvWB.SetCF(r.Put.GetCf(), r.Put.GetKey(), r.Put.GetValue())
 					if proposal != nil {
-						toPrint += fmt.Sprintf("+++++[id=%d] writing [cf=%v,key=%v,val=%v]\n", d.PeerId(), r.Put.GetCf(), r.Put.GetKey(), r.Put.GetValue())
+						toPrint += fmt.Sprintf("+++++[id=%d] writing [cf=%v,key=%v,val=%v]\n",
+							d.PeerId(), r.Put.GetCf(), string(r.Put.GetKey()), string(r.Put.GetValue()))
 					}
 					responses = append(responses, &raft_cmdpb.Response{
 						CmdType: r.CmdType,
@@ -173,7 +183,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				} else if r.CmdType == raft_cmdpb.CmdType_Delete {
 					kvWB.DeleteCF(r.Delete.GetCf(), r.Delete.GetKey())
 					if proposal != nil {
-						toPrint += fmt.Sprintf("+++++[id=%d] deleting [cf=%v,key=%v]\n", d.PeerId(), r.Put.GetCf(), r.Put.GetKey())
+						toPrint += fmt.Sprintf("+++++[id=%d] deleting [cf=%v,key=%v]\n",
+							d.PeerId(), r.Put.GetCf(), string(r.Put.GetKey()))
 					}
 					responses = append(responses, &raft_cmdpb.Response{
 						CmdType: r.CmdType,
@@ -250,10 +261,6 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
 	}
 
-	for _, fn := range postWriteFuncs {
-		fn()
-	}
-
 	for i := range proposalsToRespond {
 		proposalsToRespond[i].cb.Done(proposalReponses[i])
 		if d.RaftGroup.Raft.State == raft.StateLeader {
@@ -262,7 +269,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	}
 
 	if len(toPrint) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil) {
-		// fmt.Print(toPrint)
+		fmt.Print(toPrint)
 		// log.Warn(toPrint)
 	}
 
@@ -288,6 +295,12 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	}
 
 	d.peer.RaftGroup.Advance(rd)
+
+	// Run these functions after the raft state (e.g. applied index) is updated.
+	// CompactLog command may complain that the applied index isn't caught up.
+	for _, fn := range postWriteFuncs {
+		fn()
+	}
 }
 
 func findPeerByID(peers []*metapb.Peer, id uint64) *metapb.Peer {

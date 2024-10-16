@@ -84,8 +84,18 @@ func newLog(storage Storage) *RaftLog {
 
 	if firstIndex < lastIndex+1 {
 		ee, err := storage.Entries(firstIndex, lastIndex+1)
+
+		fi, err1 := storage.FirstIndex()
+		li, err2 := storage.LastIndex()
+		hardState, confState, err3 := storage.InitialState()
 		if err != nil {
-			panic("storage.Entries() " + err.Error())
+			panic(
+				fmt.Sprintf(
+					"storage.Entries[%d,%d), err:%v, fi:%v, %v, li: %v, %v, hs:%v, cs:%v, %v",
+					firstIndex, lastIndex+1, err.Error(), fi, err1, li, err2,
+					hardState, confState, err3,
+				),
+			)
 		}
 		entries = append(entries, ee...)
 	}
@@ -139,7 +149,7 @@ func newLog(storage Storage) *RaftLog {
 func (l *RaftLog) maybeCompact(idx uint64) {
 	// Your Code Here (2C).
 	if idx <= l.latestSnapIndex {
-		return
+		panic(fmt.Sprintf("why issue compact when idx=%d is <= latestSnapIndex=%d", idx, l.latestSnapIndex))
 	}
 
 	if idx >= l.LastIndex() {
@@ -308,4 +318,8 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	}
 
 	return l.entries[i-l.latestSnapIndex].Term, nil
+}
+
+func (l *RaftLog) LatestSnapIndex() uint64 {
+	return l.latestSnapIndex
 }
