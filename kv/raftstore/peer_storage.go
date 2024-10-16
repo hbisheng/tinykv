@@ -361,7 +361,6 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	// Update LastIndex after ps.Entries(). Otherwise may fail bound check.
 	ps.raftState.LastIndex = newLastIndex
 	ps.raftState.LastTerm = entries[len(entries)-1].Term
-	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
 
 	return nil
 }
@@ -378,12 +377,45 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// and send RegionTaskApply task to region worker through ps.regionSched, also remember call ps.clearMeta
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
+
+	region := snapData.Region
+	snapTerm := snapshot.Metadata.Term
+	snapIdx := snapshot.Metadata.Index
+
+	// Clean all stale entries. This appends to the raft WB.
+	ps.clearMeta(kvWB, raftWB)
+	// update raft local states. this is persisted later in SaveReadyState.
+	ps.raftState.LastTerm = snapTerm
+	ps.raftState.LastIndex = snapIdx
+
+	// update raft apply states. this is persisted later in HandleRaftReady
+	ps.applyState.AppliedIndex = snapIdx
+	ps.applyState.TruncatedState.Index = snapIdx
+	ps.applyState.TruncatedState.Term = snapTerm
+
+	// apply data.
+	log.Warnf("starting region apply task")
+	// Nobody checks the state, why set this?
+	ps.snapState.StateType = snap.SnapState_Applying
+	notifier := make(chan bool)
+	ps.regionSched <- &runner.RegionTaskApply{
+		RegionId: region.Id,
+		Notifier: notifier,
+		SnapMeta: snapshot.Metadata,
+		StartKey: region.StartKey,
+		EndKey:   region.EndKey,
+	}
+	<-notifier
+	log.Warnf("%v get notified that region apply task finishes", ps.Tag)
+
+	// It's fine to let this happen async.
+	ps.clearExtraData(snapData.Region)
 	return nil, nil
 }
 
 // Save memory states to disk.
 // Do not modify ready in this function, this is a requirement to advance the ready object properly later.
-func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
+func (ps *PeerStorage) SaveReadyState(ready *raft.Ready, raftWB *engine_util.WriteBatch) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
 
@@ -398,7 +430,6 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		ps.raftState.HardState.Commit = commit
 	}
 
-	raftWB := &engine_util.WriteBatch{}
 	if len(ready.Entries) != 0 {
 		for _, e := range ready.Entries {
 			toPrint += fmt.Sprintf("+++++[%s] SaveReadyState -> entry to append: index: %d, term: %d\n", ps.Tag, e.Index, e.Term)
@@ -408,11 +439,11 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		}
 	}
 
-	if raftWB.Len() != 0 {
-		toPrint += fmt.Sprintf("+++++[%s] written to Raft KV\n", ps.Tag)
-	}
+	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
 	raftWB.MustWriteToDB(ps.Engines.Raft)
-
+	if raftWB.Len() != 0 {
+		toPrint += fmt.Sprintf("+++++[%s] written to Raft KV, ps.raftState:%v\n", ps.Tag, ps.raftState)
+	}
 	// Check that all entries can be fetched.
 	// fi, _ := ps.FirstIndex()
 	// li, _ := ps.LastIndex()

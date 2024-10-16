@@ -164,7 +164,8 @@ type Raft struct {
 	PendingConfIndex uint64
 
 	electionTimeoutRandomized int
-	// applied uint64
+
+	isHardStateChanged bool
 }
 
 // newRaft return a raft peer with the given config
@@ -416,7 +417,7 @@ func (r *Raft) broadcastHeartbeat() {
 			r.id, r.Term, peerID,
 		)
 	}
-	fmt.Print(toPrint)
+	// fmt.Print(toPrint)
 	// reduce the rate of heartbeat
 	r.heartbeatElapsed = 0
 }
@@ -467,7 +468,7 @@ func (r *Raft) tick() {
 		if r.heartbeatElapsed == r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
 			// broadcast heartbeat messages to every peer except oneself
-			fmt.Print("+++++broadcasting heartbeat due to tick\n")
+			// fmt.Printf("+++++[id=%d][term=%d]broadcasting heartbeat due to tick\n", r.id, r.Term)
 			r.broadcastHeartbeat()
 		}
 	}
@@ -575,6 +576,7 @@ func (r *Raft) Step(m pb.Message) error {
 	incomingTerm := m.Term
 	if incomingTerm > r.Term {
 		fmt.Printf("+++++[id=%d][term=%d] incoming term=%d from id=%d is higher\n", r.id, r.Term, m.Term, m.From)
+		r.isHardStateChanged = true
 		r.becomeFollower(m.Term, None)
 	} else if incomingTerm < r.Term {
 		if m.MsgType == pb.MessageType_MsgHup ||
@@ -605,6 +607,7 @@ func (r *Raft) Step(m pb.Message) error {
 		prevVote := r.Vote
 		if r.Vote == None && isUpToDate(m.Index, m.LogTerm, r.RaftLog.LastIndex(), r.RaftLog.mustTerm(r.RaftLog.LastIndex())) {
 			r.Vote = m.From
+			r.isHardStateChanged = true
 		}
 
 		r.msgs = append(r.msgs, pb.Message{
@@ -1019,6 +1022,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	)
 	r.Term = snapTerm
 	r.Lead = m.From
+	r.isHardStateChanged = true
 
 	r.RaftLog.latestSnapIndex = snapIndex
 	r.RaftLog.committed = snapIndex

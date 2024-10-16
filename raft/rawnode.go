@@ -157,6 +157,8 @@ func (rn *RawNode) Ready() Ready {
 		snap = *rn.Raft.RaftLog.pendingSnapshot
 	}
 	return Ready{
+		HardState:        pb.HardState{Term: rn.Raft.Term, Vote: rn.Raft.Vote, Commit: rn.Raft.RaftLog.committed},
+		SoftState:        &SoftState{Lead: rn.Raft.Lead, RaftState: rn.Raft.State},
 		Entries:          rn.Raft.RaftLog.unstableEntries(),
 		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
 		Messages:         messages,
@@ -183,6 +185,10 @@ func (rn *RawNode) HasReady() bool {
 		return true
 	}
 
+	if rn.Raft.isHardStateChanged {
+		return true
+	}
+
 	return false
 }
 
@@ -200,6 +206,14 @@ func (rn *RawNode) Advance(rd Ready) {
 
 	// Clear the messages that were sent
 	rn.Raft.msgs = nil
+
+	// Clear the snapshot
+	if rn.Raft.RaftLog.pendingSnapshot != nil {
+		rn.Raft.RaftLog.pendingSnapshot = nil
+	}
+
+	// Clear the hardstate flag
+	rn.Raft.isHardStateChanged = false
 }
 
 // GetProgress return the Progress of this node and its peers, if this

@@ -78,24 +78,38 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// 	fmt.Print(toPrint)
 	// }
 
+	raftWB := &engine_util.WriteBatch{}
+	kvWB := &engine_util.WriteBatch{}
 	if rd.Snapshot.Metadata != nil {
-		panic(fmt.Sprintf("we got a snapshot!!! %v", rd.Snapshot))
+		log.Warnf("+++++[id=%d] handling snapshot: %v, rd: %+v", d.PeerId(), rd.Snapshot.Metadata, rd)
+
+		snapIdx := rd.Snapshot.Metadata.Index
+		// Make an assumption that snap index will be smaller than the entries and commit entries.
+		// Makes it easy to clean up stale states.
+		if len(rd.Entries) > 0 && rd.Entries[0].Index < snapIdx {
+			panic(fmt.Sprintf("entry idx %d, snap idx %d, ready: %v", rd.Entries[0].Index, snapIdx, rd.Snapshot))
+		}
+
+		if len(rd.CommittedEntries) > 0 && rd.CommittedEntries[0].Index < snapIdx {
+			panic(fmt.Sprintf("committed entry idx %d, snap idx %d, ready: %v", rd.CommittedEntries[0].Index, snapIdx, rd.Snapshot))
+		}
+
+		d.peer.peerStorage.ApplySnapshot(&rd.Snapshot, kvWB, raftWB)
 	}
 
-	_, err := d.peer.peerStorage.SaveReadyState(&rd)
+	_, err := d.peer.peerStorage.SaveReadyState(&rd, raftWB)
 	if err != nil {
 		panic("SaveReadyState returned error: %s" + err.Error())
 	}
 
-	if len(rd.CommittedEntries) > 0 {
-		var toPrint string
-		// Apply committed entries
-		kvWB := &engine_util.WriteBatch{}
-		proposalsToRespond := []*proposal{}
-		proposalReponses := []*raft_cmdpb.RaftCmdResponse{}
-		cbsForRead := []*message.Callback{}
+	var toPrint string
+	postWriteFuncs := []func(){}
+	// Apply committed entries
+	proposalsToRespond := []*proposal{}
+	proposalReponses := []*raft_cmdpb.RaftCmdResponse{}
+	cbsForRead := []*message.Callback{}
 
-		postWriteFuncs := []func(){}
+	if len(rd.CommittedEntries) > 0 {
 		for _, e := range rd.CommittedEntries {
 			// find the proposal, apply it, and remove, respond to the client.
 			proposal := d.peer.popProposalByIndex(e.Index)
@@ -213,41 +227,43 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			}
 		}
 
-		// Update the KVs and the apply/region at the same transaction
-		regionLocalState := new(rspb.RegionLocalState)
-		regionLocalState.State = rspb.PeerState_Normal
-		regionLocalState.Region = d.peerStorage.region
-		kvWB.SetMeta(meta.RegionStateKey(d.peerStorage.region.GetId()), regionLocalState)
-
 		d.peerStorage.applyState.AppliedIndex = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
-		kvWB.SetMeta(meta.ApplyStateKey(d.peerStorage.region.GetId()), d.peerStorage.applyState)
+	}
 
-		kvWB.MustWriteToDB(d.ctx.engine.Kv)
+	// Update the KVs and the apply/region at the same transaction
+	regionLocalState := new(rspb.RegionLocalState)
+	regionLocalState.State = rspb.PeerState_Normal
+	regionLocalState.Region = d.peerStorage.region
+	kvWB.SetMeta(meta.RegionStateKey(d.peerStorage.region.GetId()), regionLocalState)
 
-		toPrint += fmt.Sprintf("+++++[id=%d] persisting regionLocalState: %v\n", d.PeerId(), regionLocalState)
-		toPrint += fmt.Sprintf("+++++[id=%d] persisting applyState: %v\n", d.PeerId(), d.peerStorage.applyState)
-		toPrint += fmt.Sprintf("+++++[id=%d] finish writing to KV store, len(rd.CommittedEntries):%d \n", d.PeerId(), len(rd.CommittedEntries))
+	// d.peerStorage.applyState.TruncatedState is updated in admin command when needed.
+	// Inefficiency: no need to write to disk if there's no change.
+	kvWB.SetMeta(meta.ApplyStateKey(d.peerStorage.region.GetId()), d.peerStorage.applyState)
+	kvWB.MustWriteToDB(d.ctx.engine.Kv)
 
-		// Opening a transaction here to ensure all previously writes are visible.
-		for _, cb := range cbsForRead {
-			cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
-		}
+	toPrint += fmt.Sprintf("+++++[id=%d] persisting regionLocalState: %v\n", d.PeerId(), regionLocalState)
+	toPrint += fmt.Sprintf("+++++[id=%d] persisting applyState: %v\n", d.PeerId(), d.peerStorage.applyState)
+	toPrint += fmt.Sprintf("+++++[id=%d] finish writing to KV store, len(rd.CommittedEntries):%d \n", d.PeerId(), len(rd.CommittedEntries))
+	toPrint += fmt.Sprintf("+++++[id=%d] latest RaftLocalState in memory: %v\n", d.PeerId(), d.peerStorage.raftState)
+	// Opening a transaction here to ensure all previously writes are visible.
+	for _, cb := range cbsForRead {
+		cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
+	}
 
-		for _, fn := range postWriteFuncs {
-			fn()
-		}
+	for _, fn := range postWriteFuncs {
+		fn()
+	}
 
-		for i := range proposalsToRespond {
-			proposalsToRespond[i].cb.Done(proposalReponses[i])
-			if d.RaftGroup.Raft.State == raft.StateLeader {
-				toPrint += fmt.Sprintf("+++++[id=%d] responded to proposal: %v\n", d.PeerId(), proposalsToRespond[i])
-			}
-		}
-
+	for i := range proposalsToRespond {
+		proposalsToRespond[i].cb.Done(proposalReponses[i])
 		if d.RaftGroup.Raft.State == raft.StateLeader {
-			fmt.Print(toPrint)
-			// log.Warn(toPrint)
+			toPrint += fmt.Sprintf("+++++[id=%d] responded to proposal: %v\n", d.PeerId(), proposalsToRespond[i])
 		}
+	}
+
+	if len(toPrint) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil) {
+		fmt.Print(toPrint)
+		// log.Warn(toPrint)
 	}
 
 	allPeers := d.peer.Region().GetPeers()
