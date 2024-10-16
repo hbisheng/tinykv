@@ -262,7 +262,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	}
 
 	if len(toPrint) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil) {
-		fmt.Print(toPrint)
+		// fmt.Print(toPrint)
 		// log.Warn(toPrint)
 	}
 

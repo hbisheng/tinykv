@@ -156,9 +156,14 @@ func (rn *RawNode) Ready() Ready {
 	if rn.Raft.RaftLog.pendingSnapshot != nil {
 		snap = *rn.Raft.RaftLog.pendingSnapshot
 	}
+
+	hardState := pb.HardState{}
+	if rn.Raft.isHardStateChanged {
+		hardState = pb.HardState{Term: rn.Raft.Term, Vote: rn.Raft.Vote, Commit: rn.Raft.RaftLog.committed}
+	}
 	return Ready{
-		HardState:        pb.HardState{Term: rn.Raft.Term, Vote: rn.Raft.Vote, Commit: rn.Raft.RaftLog.committed},
-		SoftState:        &SoftState{Lead: rn.Raft.Lead, RaftState: rn.Raft.State},
+		HardState: hardState,
+		// SoftState:        &SoftState{Lead: rn.Raft.Lead, RaftState: rn.Raft.State},
 		Entries:          rn.Raft.RaftLog.unstableEntries(),
 		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
 		Messages:         messages,
