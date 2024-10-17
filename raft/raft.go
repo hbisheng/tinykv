@@ -576,6 +576,13 @@ func (r *Raft) becomeLeader() {
 // Step the entrance of handle message, see `MessageType`
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
+	if fi, err := r.RaftLog.storage.FirstIndex(); err == nil && r.RaftLog.latestSnapIndex+1 < fi {
+		log.Warnf(
+			"[id=%d][term=%d] detected storage fi change, calling CompactLog, compact idx:%d, latestSnapIdx: %d, last idx: %d, committed:%d, applied:%v",
+			r.id, r.Term, fi-1, r.RaftLog.latestSnapIndex, r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.applied)
+		r.RaftLog.maybeCompact(fi - 1)
+	}
+
 	if m.To != 0 && m.To != r.id {
 		log.Errorf("msg id=%d->id=%d, but arrived at id=%d, %v", m.From, m.To, r.id, m)
 		panic("bug bug bug")
@@ -1151,12 +1158,12 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	})
 }
 
-func (r *Raft) CompactLog(idx uint64) {
-	log.Warnf(
-		"[id=%d][term=%d] calling CompactLog, compact idx:%d, latestSnapIdx: %d, last idx: %d, committed:%d, applied:%v",
-		r.id, r.Term, idx, r.RaftLog.latestSnapIndex, r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.applied)
-	r.RaftLog.maybeCompact(idx)
-}
+// func (r *Raft) CompactLog(idx uint64) {
+// 	log.Warnf(
+// 		"[id=%d][term=%d] calling CompactLog, compact idx:%d, latestSnapIdx: %d, last idx: %d, committed:%d, applied:%v",
+// 		r.id, r.Term, idx, r.RaftLog.latestSnapIndex, r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.applied)
+// 	r.RaftLog.maybeCompact(idx)
+// }
 
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {

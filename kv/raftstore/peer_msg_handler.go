@@ -151,8 +151,12 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 						log.Warnf("+++++ [id=%v] post write fn: scheduled compact log job (proposal=%d) with compact idx:%d", d.Meta.Id, e.Index, request.CompactIndex)
 						postWriteFuncs = append(postWriteFuncs, func() {
-							// Update the raft log state and assume everything <= compact index is gone.
-							d.peer.RaftGroup.Raft.CompactLog(request.CompactIndex)
+							// After the update to applyState.TruncatedState,
+							// peerStorage.FirstIndex() will return the latest
+							// value. Raft can just look for it.
+
+							// // Update the raft log state and assume everything <= compact index is gone.
+							// d.peer.RaftGroup.Raft.CompactLog(request.CompactIndex)
 
 							// schedule the truncate task.
 							// check something using LastCompactedIdx?
