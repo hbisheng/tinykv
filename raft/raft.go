@@ -391,9 +391,9 @@ func (r *Raft) sendAppend(to uint64) bool {
 
 	var toPrint string
 	toPrint += fmt.Sprintf(
-		"+++++[id=%d][term=%d] add MsgAppend to r.msgs, (prev Term=%d,Index=%d) "+
-			"[%d..%d] entries ==> id=%d (next=%d,match=%d), my last_index=%d:\n",
-		r.id, r.Term, logTerm, logIndex,
+		"+++++[id=%d][term=%d] MsgAppend->r.msgs, (prev idx=%d,term=%d) "+
+			"entries[%d,%d] ==> id=%d (next=%d,match=%d), my last_index=%d\n",
+		r.id, r.Term, logIndex, logTerm,
 		entries[0].Index, entries[len(entries)-1].Index, to, r.Prs[to].Next, r.Prs[to].Match, r.RaftLog.LastIndex(),
 	)
 
@@ -471,6 +471,13 @@ func (r *Raft) tick() {
 			// fmt.Printf("+++++[id=%d][term=%d]broadcasting heartbeat due to tick\n", r.id, r.Term)
 			r.broadcastHeartbeat()
 		}
+
+		r.electionElapsed -= 1
+		if r.electionElapsed == 0 {
+			r.electionElapsed = r.electionTimeoutRandomized
+			// Cancel any ongoing transfer ongoing
+			r.leadTransferee = None
+		}
 	}
 
 	if r.State == StateFollower || r.State == StateCandidate {
@@ -491,6 +498,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 
 	// Clear your vote
 	r.Vote = None
+	r.leadTransferee = None
 
 	r.State = StateFollower
 	r.electionElapsed = generateRandomizedElectionTimeout(r.electionTimeout)
@@ -538,9 +546,10 @@ func (r *Raft) becomeLeader() {
 	// NOTE: Leader should propose a noop entry on its term
 
 	// r.Term += 1
-	fmt.Printf("+++++[id=%d] BECOME LEADER at term %d, proposing noop entry <===============\n", r.id, r.Term)
+	fmt.Printf("+++++[id=%d] BECOME LEADER at term %d, proposing noop entry\n", r.id, r.Term)
 
 	r.State = StateLeader
+	r.Lead = r.id
 	r.heartbeatElapsed = 0
 	r.electionElapsed = generateRandomizedElectionTimeout(r.electionTimeout)
 	r.electionTimeoutRandomized = r.electionElapsed
@@ -581,7 +590,8 @@ func (r *Raft) Step(m pb.Message) error {
 	} else if incomingTerm < r.Term {
 		if m.MsgType == pb.MessageType_MsgHup ||
 			m.MsgType == pb.MessageType_MsgBeat ||
-			m.MsgType == pb.MessageType_MsgPropose {
+			m.MsgType == pb.MessageType_MsgPropose ||
+			m.MsgType == pb.MessageType_MsgTransferLeader {
 			// let local messages pass
 		} else {
 			// ignore messages with smaller terms
@@ -596,13 +606,13 @@ func (r *Raft) Step(m pb.Message) error {
 
 	// Handle vote requests
 	if m.MsgType == pb.MessageType_MsgRequestVote {
-		fmt.Printf(
-			"+++++[id=%d][term=%d] received vote request from %d at term %d, m.Index: %d, m.LogTerm:%d, my li:%d, my li term:%d, r.Vote: %d\n",
-			r.id, r.Term, m.From, m.Term,
-			m.Index, m.LogTerm,
-			r.RaftLog.LastIndex(), r.RaftLog.mustTerm(r.RaftLog.LastIndex()),
-			r.Vote,
-		)
+		// fmt.Printf(
+		// 	"+++++[id=%d][term=%d] received vote request from %d at term %d, m.Index: %d, m.LogTerm:%d, my li:%d, my li term:%d, r.Vote: %d\n",
+		// 	r.id, r.Term, m.From, m.Term,
+		// 	m.Index, m.LogTerm,
+		// 	r.RaftLog.LastIndex(), r.RaftLog.mustTerm(r.RaftLog.LastIndex()),
+		// 	r.Vote,
+		// )
 
 		prevVote := r.Vote
 		if r.Vote == None && isUpToDate(m.Index, m.LogTerm, r.RaftLog.LastIndex(), r.RaftLog.mustTerm(r.RaftLog.LastIndex())) {
@@ -730,6 +740,17 @@ func (r *Raft) stepFollower(m pb.Message) error {
 		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
+	case pb.MessageType_MsgTimeoutNow:
+		fmt.Printf("+++++[id=%d][term=%d] (leader transfer) leader sent me %v, electing for leader\n", r.id, r.Term, m.MsgType)
+		r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
+	case pb.MessageType_MsgTransferLeader:
+		// Forward to leader
+		r.msgs = append(r.msgs, pb.Message{
+			MsgType: pb.MessageType_MsgTransferLeader,
+			To:      r.Lead,
+			From:    r.id,
+			Term:    r.Term,
+		})
 	}
 	return nil
 }
@@ -740,21 +761,51 @@ func (r *Raft) stepLeader(m pb.Message) error {
 	case pb.MessageType_MsgBeat:
 		fmt.Print("+++++broadcasting heartbeat due to beat msg\n")
 		r.broadcastHeartbeat()
-	case pb.MessageType_MsgPropose:
-		toPrint += fmt.Sprintf(
-			"+++++[id=%d][term=%d] leader receives propose: len(m.Entrie): %d, idx=%d <===============================\n",
-			r.id, r.Term, len(m.Entries), m.Index)
-		for i, e := range m.Entries {
-			entryStr := fmt.Sprintf("%+v", e)
-			if e.Data == nil {
-				entryStr = "(noop entry after winning compaign)"
+	case pb.MessageType_MsgTransferLeader:
+		if r.leadTransferee != None {
+			if r.leadTransferee == m.From {
+				fmt.Printf(
+					"+++++[id=%d][term=%d] leader transfer to id=%d is in progress, it's not ready yet!\n",
+					r.id, r.Term, m.From,
+				)
+			} else {
+				fmt.Printf(
+					"+++++[id=%d][term=%d] leader transfer to another node (id=%d) is in progress, ignore leader transfer to %d\n",
+					r.id, r.Term, r.leadTransferee, m.From,
+				)
 			}
-			toPrint += fmt.Sprintf(
-				"+++++[id=%d][term=%d] \tincoming entries[%d]: %s\n",
-				r.id, r.Term, i, entryStr)
+			return nil
 		}
 
-		// Make sure term is set.
+		fmt.Printf(
+			"+++++[id=%d][term=%d] (leader transfer) marking (id=%d) as the target\n",
+			r.id, r.Term, m.From,
+		)
+		// Mark this node as the target
+		r.leadTransferee = m.From
+		r.electionElapsed = r.electionTimeoutRandomized
+		if r.Prs[m.From].Match == r.RaftLog.LastIndex() {
+			// Make sure the follower is up-to-date before sending MsgTimeoutNow
+			fmt.Printf(
+				"+++++[id=%d][term=%d] transferring leader to id=%d, sending MsgTimeoutNow\n",
+				r.id, r.Term, m.From,
+			)
+			r.msgs = append(r.msgs, pb.Message{
+				MsgType: pb.MessageType_MsgTimeoutNow,
+				To:      m.From,
+				From:    r.id,
+				Term:    r.Term,
+			})
+		} else {
+			r.sendAppend(m.From)
+		}
+	case pb.MessageType_MsgPropose:
+		if r.leadTransferee != None {
+			errStr := fmt.Sprintf("rejecting propose because leader transfer to %d is in progress", r.leadTransferee)
+			return errors.New(errStr)
+		}
+
+		// Make sure entry term is set.
 		for _, e := range m.Entries {
 			if e.Term == 0 {
 				e.Term = r.Term
@@ -764,12 +815,25 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		r.RaftLog.appendEntries(m)
 
 		// Update leader's progress
-		r.Prs[r.id].Match = r.RaftLog.LastIndex()    // uint64(len(r.RaftLog.entries))
-		r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1 // uint64(len(r.RaftLog.entries))
+		r.Prs[r.id].Match = r.RaftLog.LastIndex()
+		r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
 
 		toPrint += fmt.Sprintf(
-			"+++++[id=%d][term=%d] post-propose latest entries, last index = %d:\n",
-			r.id, r.Term, r.RaftLog.LastIndex())
+			"+++++[id=%d][term=%d] leader receives propose:  <===============================\n",
+			r.id, r.Term)
+		for i, e := range m.Entries {
+			entryStr := fmt.Sprintf("%+v", e)
+			if e.Data == nil {
+				entryStr = "(noop entry after winning compaign)"
+			}
+			toPrint += fmt.Sprintf(
+				"+++++[id=%d][term=%d] \tentries[%d] -> %s\n",
+				r.id, r.Term, int(r.RaftLog.LastIndex())-len(m.Entries)+i+1, entryStr)
+		}
+
+		// toPrint += fmt.Sprintf(
+		// 	"+++++[id=%d][term=%d] post-propose latest entries, last index = %d:\n",
+		// 	r.id, r.Term, )
 		// for i, e := range r.RaftLog.entries {
 		// 	var entryStr string
 		// 	if e.Data == nil {
@@ -823,6 +887,20 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			r.maybeAdvanceCommit()
 			if m.Index < r.RaftLog.LastIndex() {
 				r.sendAppend(m.From)
+			} else {
+				if m.From == r.leadTransferee {
+					// Make sure the follower is up-to-date before sending MsgTimeoutNow
+					fmt.Printf(
+						"+++++[id=%d][term=%d] (leader transfer) tranfer target id=%d has just caught up, sending MsgTimeoutNow\n",
+						r.id, r.Term, m.From,
+					)
+					r.msgs = append(r.msgs, pb.Message{
+						MsgType: pb.MessageType_MsgTimeoutNow,
+						To:      m.From,
+						From:    r.id,
+						Term:    r.Term,
+					})
+				}
 			}
 		}
 	case pb.MessageType_MsgHeartbeatResponse:
@@ -850,6 +928,10 @@ func (r *Raft) stepLeader(m pb.Message) error {
 }
 
 func (r *Raft) maybeAdvanceCommit() {
+	if len(r.Prs) == 0 {
+		return
+	}
+
 	indexes := []uint64{}
 	prss := []string{}
 	for id, pr := range r.Prs {
@@ -869,17 +951,29 @@ func (r *Raft) maybeAdvanceCommit() {
 	toPrint += fmt.Sprintf(
 		"+++++[id=%d][term=%d] on leader, r.Prs:%+v, my commit:%v\n",
 		r.id, r.Term, prss, r.RaftLog.committed)
-
+	fmt.Print(toPrint)
 	majorityPos := len(indexes) / 2
 	canCommit := uint64(indexes[majorityPos])
 
 	// A leader can only commit the entry that belongs to its term.
 	if canCommit > r.RaftLog.committed && r.RaftLog.mustTerm(canCommit) == r.Term {
+		prevCommit := r.RaftLog.committed
+		r.RaftLog.committed = canCommit
+
 		toPrint += fmt.Sprintf(
 			"+++++[id=%d][term=%d] commit %d -> %d\n",
-			r.id, r.Term, r.RaftLog.committed, canCommit)
+			r.id, r.Term, prevCommit, canCommit)
 
-		r.RaftLog.committed = canCommit
+		// // Check if there's any special entry to handle. No, wrong place.
+		// if r.State == StateLeader {
+		// 	for i := prevCommit; i <= r.RaftLog.committed; i++ {
+		// 		entry := r.RaftLog.entry(i)
+		// 		if entry.EntryType == eraftpb.EntryType_EntryConfChange {
+		// 			// do it now
+
+		// 		}
+		// 	}
+		// }
 
 		// broadcast commit message to other peers
 		if len(r.Prs) > 1 {
@@ -891,7 +985,7 @@ func (r *Raft) maybeAdvanceCommit() {
 			// Can't use broadcastHeartbeat because of TestLeaderCommitEntry2AB
 			// r.broadcastHeartbeat()
 		}
-		// fmt.Print(toPrint)
+		fmt.Print(toPrint)
 	} else {
 		fmt.Print(toPrint)
 	}
@@ -1044,6 +1138,17 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	}
 	r.Prs = newPrs
 
+	// Send a message to the leader to indicate the snapshot has been applied?
+	// actually, maybe this isn't strictly necessasry, in the next heartbeat the leader
+	// will know.
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		To:      m.From,
+		From:    r.id,
+		Term:    r.Term,
+		// Index:   r.RaftLog.LastIndex(),
+		Index: snapIndex,
+	})
 }
 
 func (r *Raft) CompactLog(idx uint64) {
@@ -1056,11 +1161,27 @@ func (r *Raft) CompactLog(idx uint64) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+
+	if _, ok := r.Prs[id]; !ok {
+		r.Prs[id] = &Progress{
+			// Match:
+			Next: r.RaftLog.LastIndex(),
+		}
+	}
+	// What's the catch?
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+
+	// What's the catch? The quorum has changed, so there might be some entries
+	// that can be committed now.
+
+	log.Warnf("[id=%d] removing node id=%d", r.id, id)
+	delete(r.Prs, id)
+	delete(r.votes, id)
+	r.maybeAdvanceCommit()
 }
 
 func generateRandomizedElectionTimeout(baseline int) int {

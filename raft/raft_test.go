@@ -1355,6 +1355,9 @@ func TestLeaderTransferAfterSnapshot3A(t *testing.T) {
 	nt.storage[1].CreateSnapshot(lead.RaftLog.applied, &pb.ConfState{Nodes: nodes(lead)}, nil)
 	nt.storage[1].Compact(lead.RaftLog.applied)
 
+	// I added this:
+	lead.CompactLog(lead.RaftLog.applied)
+
 	nt.recover()
 	if lead.Prs[3].Match != 1 {
 		t.Fatalf("node 1 has match %d for node 3, want %d", lead.Prs[3].Match, 1)

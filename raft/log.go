@@ -152,7 +152,7 @@ func (l *RaftLog) maybeCompact(idx uint64) {
 		panic(fmt.Sprintf("why issue compact when idx=%d is <= latestSnapIndex=%d", idx, l.latestSnapIndex))
 	}
 
-	if idx >= l.LastIndex() {
+	if idx > l.LastIndex() {
 		panic(fmt.Sprintf("trying to compact to idx=%d while last index is %d", idx, l.LastIndex()))
 	}
 

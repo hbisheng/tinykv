@@ -94,6 +94,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			panic(fmt.Sprintf("committed entry idx %d, snap idx %d, ready: %v", rd.CommittedEntries[0].Index, snapIdx, rd.Snapshot))
 		}
 
+		// First apply the snapshot data, then persist the raft DB change.
+		// Failure tolerance: if there's a restart, the raft DB state is old, it
+		// will request a snapshot again.
 		d.peer.peerStorage.ApplySnapshot(&rd.Snapshot, kvWB, raftWB)
 	}
 
@@ -109,7 +112,6 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	proposalReponses := []*raft_cmdpb.RaftCmdResponse{}
 	cbsForRead := []*message.Callback{}
 
-	log.Warnf("+++++ [id=%v] len(rd.CommittedEntries):%d", len(rd.CommittedEntries))
 	if len(rd.CommittedEntries) > 0 {
 		for _, e := range rd.CommittedEntries {
 			// find the proposal, apply it, and remove, respond to the client.
