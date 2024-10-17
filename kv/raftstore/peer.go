@@ -239,7 +239,7 @@ func (p *peer) Destroy(engine *engine_util.Engines, keepData bool) error {
 	}
 	p.proposals = nil
 
-	log.Infof("%v destroy itself, takes %v", p.Tag, time.Now().Sub(start))
+	log.Errorf("%v destroy itself, takes %v", p.Tag, time.Now().Sub(start))
 	return nil
 }
 

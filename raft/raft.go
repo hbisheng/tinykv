@@ -463,6 +463,15 @@ func (r *Raft) broadcastVoteRequest() {
 func (r *Raft) tick() {
 	// Your Code Here (2A).
 
+	// // stop ticking if I'm no longer in the cluster
+	// if _, ok := r.Prs[r.id]; !ok {
+	// 	return
+	// }
+
+	if r.id == 2 {
+		log.Warnf("[id=%d][term=%d] ticking, r.electionElapsed=%v, timeout=%v", r.id, r.Term, r.electionElapsed, r.electionTimeoutRandomized)
+	}
+
 	// Heartbeat sending logic. Only the leader needs this
 	if r.State == StateLeader {
 		r.heartbeatElapsed += 1
@@ -519,6 +528,7 @@ func (r *Raft) becomeCandidate() {
 
 	// Your Code Here (2A).
 	r.isSoftStateChanged = true
+	r.isHardStateChanged = true
 	r.State = StateCandidate
 	r.electionElapsed = generateRandomizedElectionTimeout(r.electionTimeout)
 	r.electionTimeoutRandomized = r.electionElapsed
@@ -534,6 +544,7 @@ func (r *Raft) startNewElection() {
 	// Vote for itself.
 	r.Vote = r.id
 	r.votes = map[uint64]bool{r.id: true}
+	r.isHardStateChanged = true
 
 	// Single-node scenario
 	if len(r.Prs) == 1 {
@@ -581,6 +592,23 @@ func (r *Raft) becomeLeader() {
 // Step the entrance of handle message, see `MessageType`
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
+
+	// stop stepping more messages if I'm no longer in the cluster?
+	// You can't do this otherwise the node can't be re-added.
+	// if _, ok := r.Prs[r.id]; !ok {
+	// 	log.Warnf("[id=%d][term=%d] I'm not in the cluster, ignore msg %v", r.id, r.Term, m)
+	// 	return nil
+	// }
+
+	if r.id == 2 {
+		log.Errorf("[id=%d][term=%d] stepping msg %v, my info: %+v", r.id, r.Term, m, r)
+	}
+
+	if m.From != None && r.Prs[m.From] == nil {
+		log.Warnf("[id=%d][term=%d] id=%d is not part of the cluster, ignore msg %v", r.id, r.Term, m.From, m)
+		return nil
+	}
+
 	if fi, err := r.RaftLog.storage.FirstIndex(); err == nil && r.RaftLog.latestSnapIndex+1 < fi {
 		log.Warnf(
 			"[id=%d][term=%d] detected storage fi change, calling CompactLog, compact idx:%d, latestSnapIdx: %d, last idx: %d, committed:%d, applied:%v",
@@ -662,7 +690,7 @@ func (r *Raft) Step(m pb.Message) error {
 	}
 
 	if m.MsgType == pb.MessageType_MsgHup && (r.State == StateFollower || r.State == StateCandidate) {
-		fmt.Printf("+++++[id=%d][term=%d] received MsgHup\n", r.id, r.Term)
+		fmt.Printf("+++++[id=%d][term=%d] : %v\n", r.id, r.Term, m)
 		r.becomeCandidate()
 		r.startNewElection()
 		return nil
@@ -782,6 +810,12 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		// Corner case: the target doesn't exist
 		if _, ok := r.Prs[m.From]; !ok {
 			// ignore
+			return nil
+		}
+
+		// Corner case: the target is the node itself
+		if m.From == r.id {
+			// nothing to do
 			return nil
 		}
 
@@ -1221,6 +1255,11 @@ func (r *Raft) addNode(id uint64) {
 			// Match:
 			Next: r.RaftLog.LastIndex(),
 		}
+		log.Warnf("[id=%d] adding node id=%d", r.id, id)
+
+		if r.State == StateLeader {
+			r.sendAppend(id)
+		}
 	}
 	// What's the catch?
 }
@@ -1236,6 +1275,8 @@ func (r *Raft) removeNode(id uint64) {
 	delete(r.Prs, id)
 	delete(r.votes, id)
 	r.maybeAdvanceCommit()
+
+	// I'm the one to be removed?!
 }
 
 func generateRandomizedElectionTimeout(baseline int) int {
