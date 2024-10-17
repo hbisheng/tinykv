@@ -835,6 +835,28 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			}
 		}
 
+		// // Check if there's conf change.
+		// acceptNewConfChange := r.PendingConfIndex == 0 || r.PendingConfIndex >= r.RaftLog.applied
+		// for i, e := range m.Entries {
+		// 	if e.EntryType == eraftpb.EntryType_EntryConfChange {
+		// 		if acceptNewConfChange {
+		// 			r.PendingConfIndex = r.RaftLog.LastIndex() + uint64(1+i)
+		// 			acceptNewConfChange = false
+		// 		} else {
+		// 			log.Warnf("[id=%d] PendingConfIndex is %d, applied=%d, ignoring new conf change at idx=%d: %v",
+		// 				r.id, r.PendingConfIndex, r.RaftLog.applied, r.RaftLog.LastIndex()+uint64(1+i), e)
+
+		// 			// replace it with an empty conf change
+		// 			emptyCc := pb.ConfChange{}
+		// 			data, err := emptyCc.Marshal()
+		// 			if err != nil {
+		// 				return err
+		// 			}
+		// 			e.Data = data
+		// 		}
+		// 	}
+		// }
+
 		r.RaftLog.appendEntries(m)
 
 		// Update leader's progress
