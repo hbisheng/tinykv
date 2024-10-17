@@ -161,9 +161,15 @@ func (rn *RawNode) Ready() Ready {
 	if rn.Raft.isHardStateChanged {
 		hardState = pb.HardState{Term: rn.Raft.Term, Vote: rn.Raft.Vote, Commit: rn.Raft.RaftLog.committed}
 	}
+
+	// TestRawNodeRestart2AC doesn't like the setting of SoftState. The isSoftStateChanged flag is needed
+	var softState *SoftState
+	if rn.Raft.isSoftStateChanged {
+		softState = &SoftState{Lead: rn.Raft.Lead, RaftState: rn.Raft.State}
+	}
 	return Ready{
-		HardState: hardState,
-		// SoftState:        &SoftState{Lead: rn.Raft.Lead, RaftState: rn.Raft.State},
+		HardState:        hardState,
+		SoftState:        softState,
 		Entries:          rn.Raft.RaftLog.unstableEntries(),
 		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
 		Messages:         messages,
@@ -219,6 +225,7 @@ func (rn *RawNode) Advance(rd Ready) {
 
 	// Clear the hardstate flag
 	rn.Raft.isHardStateChanged = false
+	rn.Raft.isSoftStateChanged = false
 }
 
 // GetProgress return the Progress of this node and its peers, if this

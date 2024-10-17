@@ -166,6 +166,7 @@ type Raft struct {
 	electionTimeoutRandomized int
 
 	isHardStateChanged bool
+	isSoftStateChanged bool
 }
 
 // newRaft return a raft peer with the given config
@@ -500,6 +501,9 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.Vote = None
 	r.leadTransferee = None
 
+	if r.State != StateFollower {
+		r.isSoftStateChanged = true
+	}
 	r.State = StateFollower
 	r.electionElapsed = generateRandomizedElectionTimeout(r.electionTimeout)
 	r.electionTimeoutRandomized = r.electionElapsed
@@ -514,6 +518,7 @@ func (r *Raft) becomeCandidate() {
 	r.Term += 1
 
 	// Your Code Here (2A).
+	r.isSoftStateChanged = true
 	r.State = StateCandidate
 	r.electionElapsed = generateRandomizedElectionTimeout(r.electionTimeout)
 	r.electionTimeoutRandomized = r.electionElapsed
@@ -548,12 +553,12 @@ func (r *Raft) becomeLeader() {
 	// r.Term += 1
 	fmt.Printf("+++++[id=%d] BECOME LEADER at term %d, proposing noop entry\n", r.id, r.Term)
 
+	r.isSoftStateChanged = true
 	r.State = StateLeader
 	r.Lead = r.id
 	r.heartbeatElapsed = 0
 	r.electionElapsed = generateRandomizedElectionTimeout(r.electionTimeout)
 	r.electionTimeoutRandomized = r.electionElapsed
-
 	// Update next index optimistically
 	for _, pr := range r.Prs {
 		// TODO: consider last index + 1, because of the noop entry.
@@ -748,6 +753,11 @@ func (r *Raft) stepFollower(m pb.Message) error {
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgTimeoutNow:
+		// Corner case: this node has been removed from the cluster
+		if _, ok := r.Prs[r.id]; !ok {
+			return nil
+		}
+
 		fmt.Printf("+++++[id=%d][term=%d] (leader transfer) leader sent me %v, electing for leader\n", r.id, r.Term, m.MsgType)
 		r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
 	case pb.MessageType_MsgTransferLeader:
@@ -769,19 +779,25 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		fmt.Print("+++++broadcasting heartbeat due to beat msg\n")
 		r.broadcastHeartbeat()
 	case pb.MessageType_MsgTransferLeader:
+		// Corner case: the target doesn't exist
+		if _, ok := r.Prs[m.From]; !ok {
+			// ignore
+			return nil
+		}
+
 		if r.leadTransferee != None {
 			if r.leadTransferee == m.From {
 				fmt.Printf(
-					"+++++[id=%d][term=%d] leader transfer to id=%d is in progress, it's not ready yet!\n",
+					"+++++[id=%d][term=%d] (leader transfer) to id=%d is in progress, it's not ready yet!\n",
 					r.id, r.Term, m.From,
 				)
+				return nil
 			} else {
 				fmt.Printf(
-					"+++++[id=%d][term=%d] leader transfer to another node (id=%d) is in progress, ignore leader transfer to %d\n",
+					"+++++[id=%d][term=%d] (leader transfer) change target from id=%d to id=%d\n",
 					r.id, r.Term, r.leadTransferee, m.From,
 				)
 			}
-			return nil
 		}
 
 		fmt.Printf(
@@ -1001,6 +1017,9 @@ func (r *Raft) maybeAdvanceCommit() {
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
+	if r.Lead != m.From {
+		r.isSoftStateChanged = true
+	}
 	r.Lead = m.From
 	var toPrint string
 	// toPrint += fmt.Sprintf(
@@ -1096,6 +1115,9 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 
 	// The following is WRONG. You have to ensure the entries match.
 	// // r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
+	if r.Lead != m.From {
+		r.isSoftStateChanged = true
+	}
 	r.Lead = m.From
 	r.msgs = append(r.msgs, pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeatResponse,
@@ -1125,6 +1147,9 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.stabled,
 	)
 	r.Term = snapTerm
+	if r.Lead != m.From {
+		r.isSoftStateChanged = true
+	}
 	r.Lead = m.From
 	r.isHardStateChanged = true
 
