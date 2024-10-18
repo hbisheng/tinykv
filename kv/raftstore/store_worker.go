@@ -177,10 +177,12 @@ func (d *storeWorker) onRaftMessage(msg *rspb.RaftMessage) error {
 	if ok {
 		return nil
 	}
+
 	created, err := d.maybeCreatePeer(regionID, msg)
 	if err != nil {
 		return err
 	}
+	log.Warnf("calling maybeCreatePeer, created:%v, err:%v", created, err)
 	if !created {
 		return nil
 	}
@@ -202,7 +204,7 @@ func (d *storeWorker) maybeCreatePeer(regionID uint64, msg *rspb.RaftMessage) (b
 		return true, nil
 	}
 	if !util.IsInitialMsg(msg.Message) {
-		log.Debugf("target peer %s doesn't exist", msg.ToPeer)
+		log.Warnf("target peer %s doesn't exist", msg.ToPeer)
 		return false, nil
 	}
 
@@ -210,7 +212,7 @@ func (d *storeWorker) maybeCreatePeer(regionID uint64, msg *rspb.RaftMessage) (b
 		StartKey: msg.StartKey,
 		EndKey:   msg.EndKey,
 	}) {
-		log.Debugf("msg %s is overlapped with exist region %s", msg, region)
+		log.Warnf("msg %s is overlapped with exist region %s", msg, region)
 		if util.IsFirstVoteMessage(msg.Message) {
 			meta.pendingVotes = append(meta.pendingVotes, msg)
 		}

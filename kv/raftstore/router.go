@@ -64,7 +64,7 @@ func (pr *router) send(regionID uint64, msg message.Msg) error {
 		return errPeerNotFound
 	}
 	// if msg.Data != nil {
-	// 	log.Warnf("         (pr *router) sending message (%v) to the peerSender %v", msg.Data, pr.peerSender)
+	// log.Errorf("         (pr *router) sending message (%v) to the peerSender %v", msg.Data, pr.peerSender)
 	// }
 	pr.peerSender <- msg
 	return nil

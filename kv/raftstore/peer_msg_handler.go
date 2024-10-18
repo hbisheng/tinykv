@@ -98,6 +98,17 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		// Failure tolerance: if there's a restart, the raft DB state is old, it
 		// will request a snapshot again.
 		d.peer.peerStorage.ApplySnapshot(&rd.Snapshot, kvWB, raftWB)
+
+		snapData := new(rspb.RaftSnapshotData)
+		if err := snapData.Unmarshal(rd.Snapshot.Data); err != nil {
+			panic(err.Error())
+		}
+		// Update storeMeta of the node itself.
+		// This updates region in two places:
+		// 1. d.ctx.storeMeta.regions
+		// 2. d.peer.peerStorage.region
+		d.ctx.storeMeta.setRegion(snapData.Region, d.peer)
+		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: snapData.Region})
 	}
 
 	_, err := d.peer.peerStorage.SaveReadyState(&rd, raftWB)
@@ -112,11 +123,15 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	proposalReponses := []*raft_cmdpb.RaftCmdResponse{}
 	cbsForRead := []*message.Callback{}
 
+	// Make sure we have access to all peers, even though one of them may be in
+	// the progress of removal.
+	allPeers := d.peer.Region().GetPeers()
+
 	if len(rd.CommittedEntries) > 0 {
 		for _, e := range rd.CommittedEntries {
 			// find the proposal, apply it, and remove, respond to the client.
 			proposal := d.peer.popProposalByIndex(e.Index)
-			log.Warnf("+++++ [id=%v] processing committed entry %d, proposal:%v", d.Meta.Id, e.Index, proposal)
+			// log.Warnf("+++++ [id=%v] processing committed entry %d, proposal:%v", d.Meta.Id, e.Index, proposal)
 
 			// if proposal != nil {
 			// 	toPrint += fmt.Sprintf("+++++[id=%d] committed entry: %v, matching proposal: %v, proposals: %v\n", d.PeerId(), e, proposal, d.peer.proposals)
@@ -159,6 +174,28 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 				postWriteFuncs = append(postWriteFuncs, func() {
 					d.peer.RaftGroup.ApplyConfChange(*cc)
+
+					if cc.ChangeType == eraftpb.ConfChangeType_RemoveNode {
+						if targetPeer.Id == d.Meta.GetId() {
+							log.Errorf("[id=%d] detected removal, destroying itself", d.Meta.GetId())
+							// d.stopped = true
+							// What if I don't do this? destroyPeer() already does this
+							// destroyPeer() also deletes the region from d.ctx.storeMeta.
+							d.destroyPeer()
+						} else {
+							// Update d.ctx.storeMeta?
+							// What if I don't?
+							d.removePeerCache(targetPeer.GetId())
+
+							// if isInitialized && meta.regionRanges.Delete(&regionItem{region: d.Region()}) == nil {
+							// 	panic(d.Tag + " meta corruption detected")
+							// }
+							// if _, ok := meta.regions[regionID]; !ok {
+							// 	panic(d.Tag + " meta corruption detected")
+							// }
+							// delete(meta.regions, regionID)
+						}
+					}
 				})
 
 				// finish processing conf change.
@@ -264,6 +301,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 						} else {
 							resp.Value = val
 						}
+						// log.Errorf(
+						// 	"[id=%d] engine_util.GetCF, idx=%d, cf=%v, key=%v, val=%v",
+						// 	d.Meta.GetId(), e.Index, cf, string(key), string(val))
 					})
 
 					responses = append(responses, &raft_cmdpb.Response{
@@ -299,18 +339,12 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// toPrint += fmt.Sprintf("+++++[id=%d] what's in ready -> %v\n", d.PeerId(), rd)
 	toPrint += fmt.Sprintf("+++++[id=%d] persisting regionLocalState: %v\n", d.PeerId(), regionLocalState)
 	toPrint += fmt.Sprintf("+++++[id=%d] persisting applyState: %v\n", d.PeerId(), d.peerStorage.applyState)
-	toPrint += fmt.Sprintf("+++++[id=%d] finish writing to KV store, len(rd.CommittedEntries):%d \n", d.PeerId(), len(rd.CommittedEntries))
-	toPrint += fmt.Sprintf("+++++[id=%d] latest RaftLocalState in memory: %v\n", d.PeerId(), d.peerStorage.raftState)
+	// toPrint += fmt.Sprintf("+++++[id=%d] finish writing to KV store, len(rd.CommittedEntries):%d \n", d.PeerId(), len(rd.CommittedEntries))
+	toPrint += fmt.Sprintf("+++++[id=%d] latest RaftLocalState in memory: %v, peerCache: %v, d.ctx.storeMeta.regionRanges: %v, d.ctx.storeMeta.regions: %v\n",
+		d.PeerId(), d.peerStorage.raftState, d.peerCache, d.ctx.storeMeta.regionRanges, d.ctx.storeMeta.regions)
 	// Opening a transaction here to ensure all previously writes are visible.
 	for _, cb := range cbsForRead {
 		cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
-	}
-
-	for i := range proposalsToRespond {
-		proposalsToRespond[i].cb.Done(proposalReponses[i])
-		if d.RaftGroup.Raft.State == raft.StateLeader {
-			toPrint += fmt.Sprintf("+++++[id=%d] responded to proposal: %v\n", d.PeerId(), proposalsToRespond[i])
-		}
 	}
 
 	if len(toPrint) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil || d.Meta.GetId() == 2) {
@@ -318,27 +352,41 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		// log.Warn(toPrint)
 	}
 
-	allPeers := d.peer.Region().GetPeers()
 	for i := range rd.Messages {
 		msg := rd.Messages[i] // must take a copy, cannot use the iter reference directly. otherwise message can be wrong.
-		if d.Meta.GetId() == 1 {
-			fmt.Printf("[id=%d] d.ctx.trans.Send outbound message %v\n", d.Meta.GetId(), msg)
-		}
-		toPeer, err := findPeerByID(allPeers, msg.To)
+
+		fromPeer, err := findPeerByID(allPeers, msg.From)
 		if err != nil {
-			log.Warnf("[id=%d] ignore messges to peer %d, it may have been removed just now", d.Meta.GetId(), msg.To)
-			continue
+			fromPeer = d.getPeerFromCache(msg.From)
+			if fromPeer == nil {
+				fromPeer = d.peer.Meta
+				if fromPeer == nil {
+					panic(fmt.Sprintf("[id=%d] can't get fromPeer for %v", d.Meta.GetId(), msg.To))
+				}
+			}
 		}
 
-		if err := d.ctx.trans.Send(
-			&rspb.RaftMessage{
-				RegionId:    d.peer.regionId,
-				FromPeer:    mustFindPeerByID(allPeers, msg.From),
-				ToPeer:      toPeer,
-				Message:     &msg,
-				RegionEpoch: d.peerStorage.region.RegionEpoch,
-			},
-		); err != nil {
+		toPeer, err := findPeerByID(allPeers, msg.To)
+		if err != nil {
+			// look for target in peer cache
+			toPeer = d.getPeerFromCache(msg.To)
+			if toPeer == nil {
+				log.Warnf("[id=%d] ignore messge %v to peer %d, it may have been removed just now", d.Meta.GetId(), msg, msg.To)
+				continue
+			} else {
+				log.Errorf("[id=%d] got ToPeer %d from peerCache", d.Meta.GetId(), msg.To)
+			}
+		}
+
+		raftMsg := &rspb.RaftMessage{
+			RegionId:    d.peer.regionId,
+			FromPeer:    fromPeer,
+			ToPeer:      toPeer,
+			Message:     &msg,
+			RegionEpoch: d.peerStorage.region.RegionEpoch,
+		}
+
+		if err := d.ctx.trans.Send(raftMsg); err != nil {
 			// if !strings.Contains(err.Error(), "is dropped") {
 			log.Warnf(
 				"d.ctx.trans.Send() id=%d->id=%d msg: %v, returned error: %s",
@@ -354,6 +402,15 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// CompactLog command may complain that the applied index isn't caught up.
 	for _, fn := range postWriteFuncs {
 		fn()
+	}
+
+	// Some responses (Get requests) are set in postWriteFuncs. So we want to respond to the
+	// proposals later.
+	for i := range proposalsToRespond {
+		proposalsToRespond[i].cb.Done(proposalReponses[i])
+		if d.RaftGroup.Raft.State == raft.StateLeader {
+			toPrint += fmt.Sprintf("+++++[id=%d] responded to proposal: %v\n", d.PeerId(), proposalsToRespond[i])
+		}
 	}
 }
 
@@ -398,13 +455,13 @@ func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
 	// fmt.Printf("+++++ HandleMsg is called (type=%v)\n", msg.Type)
 
 	if d.Meta.GetId() == 2 {
-		log.Errorf("[id=2] HandleMsg is called, d info: %+v", d)
+		// log.Errorf("[id=2] HandleMsg is called, d info: %+v", d)
 	}
 	switch msg.Type {
 	case message.MsgTypeRaftMessage:
 		raftMsg := msg.Data.(*rspb.RaftMessage)
 		if err := d.onRaftMsg(raftMsg); err != nil {
-			log.Errorf("%s handle raft message error %v", d.Tag, err)
+			log.Errorf("%s handle raft message error %v, msg: %v", d.Tag, err, raftMsg)
 		}
 	case message.MsgTypeRaftCmd:
 		raftCMD := msg.Data.(*message.MsgRaftCmd)
@@ -690,6 +747,8 @@ func (d *peerMsgHandler) checkMessage(msg *rspb.RaftMessage) bool {
 	// TODO: for case f, if 2 is stale for a long time, 2 will communicate with scheduler and scheduler will
 	// tell 2 is stale, so 2 can remove itself.
 	region := d.Region()
+	// log.Errorf("[id=%d] util.IsEpochStale(fromEpoch, region.RegionEpoch): %v, util.FindPeer(region, fromStoreID):%v, region:%v, fromStoreID: %v, msg: %+v",
+	// 	d.Meta.GetId(), util.IsEpochStale(fromEpoch, region.RegionEpoch), util.FindPeer(region, fromStoreID), region, fromStoreID, msg)
 	if util.IsEpochStale(fromEpoch, region.RegionEpoch) && util.FindPeer(region, fromStoreID) == nil {
 		// log.Errorf("[id=%d] handleStaleMsg will be called with msg: %+v", d.Meta.GetId(), msg)
 		// The message is stale and not in current region.

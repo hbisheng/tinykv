@@ -221,7 +221,7 @@ func newRaft(c *Config) *Raft {
 
 	li, _ := c.Storage.LastIndex()
 
-	fmt.Printf(
+	log.Warnf(
 		"+++++[id=%d] new raft node created with peers:%+v, hardState:%v, confState:%v, first index:%d, last index:%d, l.latestEntryIndex:%d, raftLog.entries: %d\n",
 		c.ID, prs, hardState, confState, fi, li, raftLog.latestSnapIndex, len(raftLog.entries),
 	)
@@ -431,7 +431,7 @@ func (r *Raft) sendHeartbeat(to uint64) {
 		To:      to,
 		From:    r.id,
 		Term:    r.Term,
-		Commit:  r.RaftLog.committed, // This doesn't seem to be very useful though.
+		// Commit:  r.RaftLog.committed, // This doesn't seem to be very useful though. In fact, it prevents the creation of new peers .......
 	})
 }
 
@@ -468,9 +468,9 @@ func (r *Raft) tick() {
 	// 	return
 	// }
 
-	if r.id == 2 {
-		log.Warnf("[id=%d][term=%d] ticking, r.electionElapsed=%v, timeout=%v", r.id, r.Term, r.electionElapsed, r.electionTimeoutRandomized)
-	}
+	// if r.id == 2 {
+	// log.Warnf("[id=%d][term=%d] ticking, r.electionElapsed=%v, timeout=%v", r.id, r.Term, r.electionElapsed, r.electionTimeoutRandomized)
+	// }
 
 	// Heartbeat sending logic. Only the leader needs this
 	if r.State == StateLeader {
@@ -600,14 +600,15 @@ func (r *Raft) Step(m pb.Message) error {
 	// 	return nil
 	// }
 
-	if r.id == 2 {
-		log.Errorf("[id=%d][term=%d] stepping msg %v, my info: %+v", r.id, r.Term, m, r)
-	}
+	// if r.id == 2 {
+	// log.Errorf("[id=%d][term=%d] stepping msg %v, my info: %+v", r.id, r.Term, m, r)
+	// }
 
-	if m.From != None && r.Prs[m.From] == nil {
-		log.Warnf("[id=%d][term=%d] id=%d is not part of the cluster, ignore msg %v", r.id, r.Term, m.From, m)
-		return nil
-	}
+	// RawNode.Step() already has similar logic
+	// if m.From != None && r.Prs[m.From] == nil {
+	// 	log.Warnf("[id=%d][term=%d] id=%d is not part of the cluster, ignore msg %v", r.id, r.Term, m.From, m)
+	// 	return nil
+	// }
 
 	if fi, err := r.RaftLog.storage.FirstIndex(); err == nil && r.RaftLog.latestSnapIndex+1 < fi {
 		log.Warnf(
@@ -690,6 +691,11 @@ func (r *Raft) Step(m pb.Message) error {
 	}
 
 	if m.MsgType == pb.MessageType_MsgHup && (r.State == StateFollower || r.State == StateCandidate) {
+		// if r.id != 1 {
+		// 	r.electionElapsed = r.electionTimeoutRandomized
+		// 	log.Errorf("[id=%d] don't do election", r.id)
+		// 	return nil
+		// }
 		fmt.Printf("+++++[id=%d][term=%d] : %v\n", r.id, r.Term, m)
 		r.becomeCandidate()
 		r.startNewElection()
@@ -1007,7 +1013,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 }
 
 func (r *Raft) maybeAdvanceCommit() {
-	if len(r.Prs) == 0 {
+	if len(r.Prs) == 0 || r.State != StateLeader {
 		return
 	}
 
@@ -1028,9 +1034,9 @@ func (r *Raft) maybeAdvanceCommit() {
 
 	var toPrint string
 	toPrint += fmt.Sprintf(
-		"+++++[id=%d][term=%d] on leader, r.Prs:%+v, my commit:%v\n",
+		"+++++[id=%d][term=%d] on leader, progress(r.Prs):%+v, my commit:%v\n",
 		r.id, r.Term, prss, r.RaftLog.committed)
-	fmt.Print(toPrint)
+
 	majorityPos := len(indexes) / 2
 	canCommit := uint64(indexes[majorityPos])
 
