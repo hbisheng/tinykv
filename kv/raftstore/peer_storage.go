@@ -321,7 +321,7 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 		// raftWB.SetCF(engine_util.CfDefault /* ? */, logKey, e.Data)
 		raftWB.SetMeta(logKey, &e)
 		newLastIndex = e.Index
-		log.Warnf("+++++[%v] writing raft log entry at idx=%d", ps.Tag, e.Index)
+		// log.Warnf("+++++[%v] writing raft log entry at idx=%d", ps.Tag, e.Index)
 	}
 
 	psli, err := ps.LastIndex()

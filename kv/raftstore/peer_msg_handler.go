@@ -126,7 +126,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// Make sure we have access to all peers, even though one of them may be in
 	// the progress of removal.
 	allPeers := d.peer.Region().GetPeers()
-
+	var removedFromCluster bool
 	if len(rd.CommittedEntries) > 0 {
 		for _, e := range rd.CommittedEntries {
 			// find the proposal, apply it, and remove, respond to the client.
@@ -167,6 +167,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 					d.peerStorage.region.Peers = addPeer(d.peerStorage.region.Peers, targetPeer)
 				case eraftpb.ConfChangeType_RemoveNode:
 					d.peerStorage.region.Peers = removePeer(d.peerStorage.region.Peers, targetPeer)
+					if targetPeer.Id == d.Meta.GetId() {
+						removedFromCluster = true
+					}
 				default:
 					panic("unexpected config change type")
 				}
@@ -177,7 +180,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 					if cc.ChangeType == eraftpb.ConfChangeType_RemoveNode {
 						if targetPeer.Id == d.Meta.GetId() {
-							log.Errorf("[id=%d] detected removal, destroying itself", d.Meta.GetId())
+							log.Errorf("[id=%d] detected self removal, destroying itself", d.Meta.GetId())
 							// d.stopped = true
 							// What if I don't do this? destroyPeer() already does this
 							// destroyPeer() also deletes the region from d.ctx.storeMeta.
@@ -185,8 +188,11 @@ func (d *peerMsgHandler) HandleRaftReady() {
 						} else {
 							// Update d.ctx.storeMeta?
 							// What if I don't?
-							d.removePeerCache(targetPeer.GetId())
+							// log.Errorf("[id=%d] detected removal of id=%d, peerCache: %v", d.Meta.GetId(), targetPeer.Id, d.peerCache)
 
+							// It's possible that the stale peer sends another message and gets inserted again.
+							d.removePeerCache(targetPeer.GetId())
+							// log.Errorf("[id=%d] after removal of id=%d, peerCache: %v", d.Meta.GetId(), targetPeer.Id, d.peerCache)
 							// if isInitialized && meta.regionRanges.Delete(&regionItem{region: d.Region()}) == nil {
 							// 	panic(d.Tag + " meta corruption detected")
 							// }
@@ -347,12 +353,17 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
 	}
 
-	if len(toPrint) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil || d.Meta.GetId() == 2) {
-		fmt.Print(toPrint)
+	if len(toPrint) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil || d.Meta.GetId() == 2 || d.Meta.GetId() == 3) {
+		fmt.Println(toPrint)
 		// log.Warn(toPrint)
 	}
 
 	for i := range rd.Messages {
+		if removedFromCluster {
+			// reduce sending some stale messages
+			continue
+		}
+
 		msg := rd.Messages[i] // must take a copy, cannot use the iter reference directly. otherwise message can be wrong.
 
 		fromPeer, err := findPeerByID(allPeers, msg.From)
@@ -690,6 +701,11 @@ func (d *peerMsgHandler) onRaftMsg(msg *rspb.RaftMessage) error {
 		}
 		d.ctx.snapMgr.DeleteSnapshot(*key, s, false)
 		return nil
+	}
+
+	if _, ok := d.peerCache[msg.GetFromPeer().GetId()]; !ok {
+		log.Errorf("[id=%d] inserting peer %d to peer cache due to msg %v",
+			d.Meta.GetId(), msg.GetFromPeer().GetId(), msg)
 	}
 	d.insertPeerCache(msg.GetFromPeer())
 	err = d.RaftGroup.Step(*msg.GetMessage())
