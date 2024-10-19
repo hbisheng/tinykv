@@ -1245,7 +1245,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
 	snapIndex := m.Snapshot.Metadata.Index
 	snapTerm := m.Snapshot.Metadata.Term
-	if snapIndex <= r.RaftLog.committed || snapTerm < r.Term {
+	if snapIndex <= r.RaftLog.committed {
 		fmt.Printf("+++++[id=%d][term=%d] ignore stale snapshot, snap index:%d, snap term=%d, my committed:%d\n",
 			r.id, r.Term, snapIndex, snapTerm, r.RaftLog.committed)
 		return
@@ -1255,7 +1255,8 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		r.id, r.Term, snapIndex, snapTerm,
 		r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.stabled,
 	)
-	r.Term = snapTerm
+	// r.Term = snapTerm
+
 	if r.Lead != m.From {
 		r.isSoftStateChanged = true
 	}

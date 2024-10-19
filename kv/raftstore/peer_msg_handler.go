@@ -346,6 +346,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// Update the KVs and the apply/region at the same transaction
 	regionLocalState := new(rspb.RegionLocalState)
 	regionLocalState.State = rspb.PeerState_Normal // what if this node is removed?
+	if removedFromCluster || d.stopped {
+		regionLocalState.State = rspb.PeerState_Tombstone
+	}
 	regionLocalState.Region = d.peerStorage.region
 	kvWB.SetMeta(meta.RegionStateKey(d.peerStorage.region.GetId()), regionLocalState)
 
@@ -355,13 +358,14 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	kvWB.MustWriteToDB(d.ctx.engine.Kv)
 
 	// toPrint += fmt.Sprintf("+++++[id=%d] what's in ready -> %v\n", d.PeerId(), rd)
-	// toPrint += fmt.Sprintf("+++++[id=%d] persisting regionLocalState: %v\n", d.PeerId(), regionLocalState)
 	// toPrint += fmt.Sprintf("+++++[id=%d] finish writing to KV store, len(rd.CommittedEntries):%d \n", d.PeerId(), len(rd.CommittedEntries))
+
 	toPrint += fmt.Sprintf("+++++[id=%d] latest RaftLocalState: %v, peerCache: %v\n",
 		d.PeerId(), d.peerStorage.raftState, d.peerCache)
 	toPrint += fmt.Sprintf("+++++[id=%d] d.ctx.storeMeta.regions: %v\n", d.PeerId(), d.ctx.storeMeta.regions)
-	toPrint += fmt.Sprintf("+++++[id=%d] persisted RaftApplyState: %v\n",
-		d.PeerId(), d.peerStorage.applyState)
+	toPrint += fmt.Sprintf("+++++[id=%d][store_id=%d] persisted regionLocalState: %v\n", d.PeerId(), d.storeID(), regionLocalState)
+	toPrint += fmt.Sprintf("+++++[id=%d] persisted RaftApplyState: %v, store id: %v\n",
+		d.PeerId(), d.peerStorage.applyState, d.storeID())
 	toPrint += fmt.Sprintf("+++++[id=%d] applied index: %v, region epoch: %v\n",
 		d.PeerId(), d.peerStorage.applyState.AppliedIndex, d.peerStorage.region.RegionEpoch)
 	// Opening a transaction here to ensure all previously writes are visible.
@@ -369,7 +373,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
 	}
 
-	if len(rd.CommittedEntries) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil) {
+	// if len(rd.CommittedEntries) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil) {
+	if len(rd.CommittedEntries) > 0 {
 		// if len(toPrint) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil || d.Meta.GetId() == 2 || d.Meta.GetId() == 3) {
 		fmt.Println(toPrint)
 		// log.Warn(toPrint)
@@ -640,6 +645,8 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 			// cb.Done(res)
 
 			return
+		case raft_cmdpb.AdminCmdType_CompactLog:
+
 		default:
 			panic(fmt.Sprintf("unknown raft admin command %v", msg.AdminRequest))
 		}
@@ -837,6 +844,7 @@ func handleStaleMsg(trans Transport, msg *rspb.RaftMessage, curEpoch *metapb.Reg
 	if !needGC {
 		log.Infof("[region %d] raft message %s is stale, current %v ignore it",
 			regionID, msgType, curEpoch)
+		log.Infof("[region %d] +++++ raft message %v", regionID, msg)
 		return
 	}
 	gcMsg := &rspb.RaftMessage{
