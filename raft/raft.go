@@ -533,7 +533,7 @@ func (r *Raft) becomeCandidate() {
 	r.electionElapsed = generateRandomizedElectionTimeout(r.electionTimeout)
 	r.electionTimeoutRandomized = r.electionElapsed
 
-	fmt.Printf("+++++[id=%d] become candidate at term %d, rand timeout %d\n", r.id, r.Term, r.electionElapsed)
+	fmt.Printf("+++++[id=%d] become candidate at term %d, rand timeout %d, r.Prs: %v\n", r.id, r.Term, r.electionElapsed, r.Prs)
 	// r.startNewElection()
 }
 
@@ -1059,6 +1059,10 @@ func (r *Raft) maybeAdvanceCommit() {
 		// 		}
 		// 	}
 		// }
+		fmt.Print(toPrint)
+		log.Warnf(
+			"+++++[id=%d][term=%d] commit %d -> %d\n",
+			r.id, r.Term, prevCommit, canCommit)
 
 		// broadcast commit message to other peers
 		if len(r.Prs) > 1 {
@@ -1070,7 +1074,6 @@ func (r *Raft) maybeAdvanceCommit() {
 			// Can't use broadcastHeartbeat because of TestLeaderCommitEntry2AB
 			// r.broadcastHeartbeat()
 		}
-		fmt.Print(toPrint)
 	} else {
 		fmt.Print(toPrint)
 	}

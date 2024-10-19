@@ -359,8 +359,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	}
 
 	for i := range rd.Messages {
-		if removedFromCluster {
-			// reduce sending some stale messages
+		if removedFromCluster && d.RaftGroup.Raft.State != raft.StateLeader {
+			// reduce sending some stale messages from removed follower
+			// but allow leader to send out remaining messages before its own removal.
 			continue
 		}
 
@@ -536,10 +537,16 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
-	log.Warnf(
-		"[id=%d] receive propose cmd, header: %v, requests: %v, admin_req: %v",
-		d.PeerId(), msg.Header, msg.Requests, msg.AdminRequest,
-	)
+	if msg.AdminRequest != nil &&
+		msg.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_TransferLeader &&
+		d.Meta.Id == msg.AdminRequest.TransferLeader.Peer.Id {
+		// no need to emit the log. The transfer is done. Just waiting for the propose to stop.
+	} else {
+		log.Warnf(
+			"[id=%d] receive propose cmd, header: %v, requests: %v, admin_req: %v",
+			d.PeerId(), msg.Header, msg.Requests, msg.AdminRequest,
+		)
+	}
 
 	nextIndex := d.peer.nextProposalIndex()
 
