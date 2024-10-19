@@ -167,6 +167,8 @@ type Raft struct {
 
 	isHardStateChanged bool
 	isSoftStateChanged bool
+
+	lastLoggedProgress string
 }
 
 // newRaft return a raft peer with the given config
@@ -401,7 +403,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 	// for i, entry := range entries {
 	// 	toPrint += fmt.Sprintf("+++++[id=%d][term=%d] \tentries[%d], index: %d, data len: %d\n", r.id, r.Term, i, entry.Index, len(entry.Data))
 	// }
-	fmt.Print(toPrint)
+	// fmt.Print(toPrint)
 
 	return true
 }
@@ -600,8 +602,8 @@ func (r *Raft) Step(m pb.Message) error {
 	// 	return nil
 	// }
 
-	// if r.id == 2 {
-	// log.Errorf("[id=%d][term=%d] stepping msg %v, my info: %+v", r.id, r.Term, m, r)
+	// if r.id == 6 {
+	// 	log.Errorf("[id=%d][term=%d] stepping msg %v, my raft log info: %+v", r.id, r.Term, m.MsgType, r.RaftLog)
 	// }
 
 	// RawNode.Step() already has similar logic
@@ -903,18 +905,24 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		r.Prs[r.id].Match = r.RaftLog.LastIndex()
 		r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
 
+		// entryStr := fmt.Sprintf("%+v", m.Entries[0])
+		// if m.Entries[0].Data == nil {
+		// 	entryStr = "(noop entry after winning compaign)"
+		// }
+
 		toPrint += fmt.Sprintf(
-			"+++++[id=%d][term=%d] leader receives propose:  <===============================\n",
-			r.id, r.Term)
-		for i, e := range m.Entries {
-			entryStr := fmt.Sprintf("%+v", e)
-			if e.Data == nil {
-				entryStr = "(noop entry after winning compaign)"
-			}
-			toPrint += fmt.Sprintf(
-				"+++++[id=%d][term=%d] \tentries[%d] -> %s\n",
-				r.id, r.Term, int(r.RaftLog.LastIndex())-len(m.Entries)+i+1, entryStr)
-		}
+			"+++++[id=%d][term=%d] leader receives propose, assigned to entries[%d]  <===============================\n",
+			r.id, r.Term, r.RaftLog.LastIndex())
+
+		// for i, e := range m.Entries {
+		// 	entryStr := fmt.Sprintf("%+v", e)
+		// 	if e.Data == nil {
+		// 		entryStr = "(noop entry after winning compaign)"
+		// 	}
+		// 	toPrint += fmt.Sprintf(
+		// 		"+++++[id=%d][term=%d] \tentries[%d] -> %s\n",
+		// 		r.id, r.Term, int(r.RaftLog.LastIndex())-len(m.Entries)+i+1, entryStr)
+		// }
 
 		// toPrint += fmt.Sprintf(
 		// 	"+++++[id=%d][term=%d] post-propose latest entries, last index = %d:\n",
@@ -943,6 +951,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 	case pb.MessageType_MsgAppendResponse:
 		if m.Reject {
 			// prevNext := r.Prs[m.From].Next
+			log.Warnf("[id=%d] received rejection, set next for id=%d to %d", r.id, m.From, m.Index)
 			r.Prs[m.From].Next = m.Index
 			if r.Prs[m.From].Next <= r.Prs[m.From].Match {
 				// It's possible for Match to go backward.
@@ -960,8 +969,8 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			}
 			r.sendAppend(m.From)
 		} else {
-			toPrint += fmt.Sprintf("+++++[id=%d][term=%d] receive append response from %d, index=%d\n", r.id, r.Term, m.From, m.Index)
-			fmt.Print(toPrint)
+			// toPrint += fmt.Sprintf("+++++[id=%d][term=%d] receive append response from %d, index=%d\n", r.id, r.Term, m.From, m.Index)
+			// fmt.Print(toPrint)
 			// Update the progress of the follower
 			if r.Prs[m.From].Match < m.Index {
 				r.Prs[m.From].Match = m.Index
@@ -1012,12 +1021,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 	return nil
 }
 
-func (r *Raft) maybeAdvanceCommit() {
-	if len(r.Prs) == 0 || r.State != StateLeader {
-		return
-	}
-
-	indexes := []uint64{}
+func (r *Raft) progressStr() string {
 	prss := []string{}
 	for id, pr := range r.Prs {
 		var idx uint64
@@ -1026,11 +1030,29 @@ func (r *Raft) maybeAdvanceCommit() {
 		} else {
 			idx = pr.Match
 		}
-		indexes = append(indexes, idx)
 		prss = append(prss, fmt.Sprintf("%v=>%v", id, idx))
 	}
-	sort.Slice(indexes, func(i, j int) bool { return indexes[i] > indexes[j] }) // descending
 	sort.Strings(prss)
+	return fmt.Sprintf("%v", prss)
+}
+
+func (r *Raft) maybeAdvanceCommit() {
+	if len(r.Prs) == 0 || r.State != StateLeader {
+		return
+	}
+
+	indexes := []uint64{}
+	prss := r.progressStr()
+	for id, pr := range r.Prs {
+		var idx uint64
+		if id == r.id {
+			idx = r.RaftLog.LastIndex()
+		} else {
+			idx = pr.Match
+		}
+		indexes = append(indexes, idx)
+	}
+	sort.Slice(indexes, func(i, j int) bool { return indexes[i] > indexes[j] }) // descending
 
 	var toPrint string
 	toPrint += fmt.Sprintf(
@@ -1046,8 +1068,8 @@ func (r *Raft) maybeAdvanceCommit() {
 		r.RaftLog.committed = canCommit
 
 		toPrint += fmt.Sprintf(
-			"+++++[id=%d][term=%d] commit %d -> %d\n",
-			r.id, r.Term, prevCommit, canCommit)
+			"+++++[id=%d][term=%d] commit %d -> %d, progress(r.Prs):%+v\n",
+			r.id, r.Term, prevCommit, canCommit, prss)
 
 		// // Check if there's any special entry to handle. No, wrong place.
 		// if r.State == StateLeader {
@@ -1059,10 +1081,10 @@ func (r *Raft) maybeAdvanceCommit() {
 		// 		}
 		// 	}
 		// }
-		fmt.Print(toPrint)
-		log.Warnf(
-			"+++++[id=%d][term=%d] commit %d -> %d\n",
-			r.id, r.Term, prevCommit, canCommit)
+		// fmt.Print(toPrint)
+		log.Errorf(
+			"+++++[id=%d][term=%d] commit %d -> %d, progress(r.Prs):%+v",
+			r.id, r.Term, prevCommit, canCommit, prss)
 
 		// broadcast commit message to other peers
 		if len(r.Prs) > 1 {
@@ -1075,7 +1097,14 @@ func (r *Raft) maybeAdvanceCommit() {
 			// r.broadcastHeartbeat()
 		}
 	} else {
-		fmt.Print(toPrint)
+		// fmt.Print(toPrint)
+		if prss != r.lastLoggedProgress {
+			r.lastLoggedProgress = prss
+			log.Warnf(
+				"[id=%d][term=%d] on leader, progress(r.Prs):%+v",
+				r.id, r.Term, prss)
+
+		}
 	}
 }
 
@@ -1106,16 +1135,31 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 			)
 		}
 
+		// if r.RaftLog.latestSnapIndex != 0 {
+		// 	log.Warnf(
+		// 		"+++++[id=%d][term=%d] follower reject, m.Index=%d, m.LogTerm=%d, entries=%s, my log term=%v, my latest snap idx=%d, my li=%d, err=%v\n",
+		// 		r.id, r.Term, m.Index, m.LogTerm, entriesStr, term, r.RaftLog.latestSnapIndex, r.RaftLog.LastIndex(), err)
+		// 	panic("stop to debug")
+		// }
+
+		// .......(case A)......... latestSnapIndex .....(case B)....... LastIndex() .......(case C).........
+		nextIndex := min(m.Index, r.RaftLog.LastIndex()+1) // handle the case when the node has very few log entries (case B and C)
+		if nextIndex < r.RaftLog.latestSnapIndex+1 {
+			// The leader has under-estimated me. Try my best position. (case A)
+			nextIndex = r.RaftLog.LastIndex() + 1
+		}
+
 		// reject
 		fmt.Printf(
-			"+++++[id=%d][term=%d] follower reject, m.Index=%d, m.LogTerm=%d, entries=%s, my log term=%v, my latest snap idx=%d, my li=%d, err=%v\n",
-			r.id, r.Term, m.Index, m.LogTerm, entriesStr, term, r.RaftLog.latestSnapIndex, r.RaftLog.LastIndex(), err)
+			"+++++[id=%d][term=%d] follower reject, nextIndex=%d, m.Index=%d, m.LogTerm=%d, entries=%s, my log term=%v, my latest snap idx=%d, my li=%d, err=%v\n",
+			r.id, r.Term, nextIndex, m.Index, m.LogTerm, entriesStr, term, r.RaftLog.latestSnapIndex, r.RaftLog.LastIndex(), err)
+
 		r.msgs = append(r.msgs, pb.Message{
 			MsgType: pb.MessageType_MsgAppendResponse,
 			To:      m.From,
 			From:    r.id,
 			Term:    r.Term,
-			Index:   min(m.Index, r.RaftLog.LastIndex()+1), // Ask for a smaller index, the preceding entry
+			Index:   nextIndex,
 			Reject:  true,
 		})
 		return

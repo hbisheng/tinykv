@@ -161,6 +161,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 					panic(err.Error())
 				}
 
+				peersLen := len(d.peerStorage.region.Peers)
 				// Update d.peerStorage.region. It will be persisted later in this function
 				switch cc.ChangeType {
 				case eraftpb.ConfChangeType_AddNode:
@@ -173,7 +174,13 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				default:
 					panic("unexpected config change type")
 				}
-				d.peerStorage.region.RegionEpoch.ConfVer += 1
+
+				if peersLen != len(d.peerStorage.region.Peers) {
+					// Only increment ConfVer when the change has an effect.
+					d.peerStorage.region.RegionEpoch.ConfVer += 1
+				}
+
+				// d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: d.peerStorage.region})
 
 				postWriteFuncs = append(postWriteFuncs, func() {
 					d.peer.RaftGroup.ApplyConfChange(*cc)
@@ -184,7 +191,12 @@ func (d *peerMsgHandler) HandleRaftReady() {
 							// d.stopped = true
 							// What if I don't do this? destroyPeer() already does this
 							// destroyPeer() also deletes the region from d.ctx.storeMeta.
-							d.destroyPeer()
+
+							// Need this condition to avoid destroying peer multiple times.
+							if !d.stopped {
+								d.destroyPeer()
+							}
+
 						} else {
 							// Update d.ctx.storeMeta?
 							// What if I don't?
@@ -260,8 +272,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				if r.CmdType == raft_cmdpb.CmdType_Put {
 					kvWB.SetCF(r.Put.GetCf(), r.Put.GetKey(), r.Put.GetValue())
 					if proposal != nil {
-						toPrint += fmt.Sprintf("+++++[id=%d] writing [cf=%v,key=%v,val=%v]\n",
-							d.PeerId(), r.Put.GetCf(), string(r.Put.GetKey()), string(r.Put.GetValue()))
+						// toPrint += fmt.Sprintf("+++++[id=%d] writing [cf=%v,key=%v,val=%v]\n",
+						// 	d.PeerId(), r.Put.GetCf(), string(r.Put.GetKey()), string(r.Put.GetValue()))
 					}
 					responses = append(responses, &raft_cmdpb.Response{
 						CmdType: r.CmdType,
@@ -270,8 +282,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				} else if r.CmdType == raft_cmdpb.CmdType_Delete {
 					kvWB.DeleteCF(r.Delete.GetCf(), r.Delete.GetKey())
 					if proposal != nil {
-						toPrint += fmt.Sprintf("+++++[id=%d] deleting [cf=%v,key=%v]\n",
-							d.PeerId(), r.Put.GetCf(), string(r.Put.GetKey()))
+						// toPrint += fmt.Sprintf("+++++[id=%d] deleting [cf=%v,key=%v]\n",
+						// 	d.PeerId(), r.Delete.GetCf(), string(r.Delete.GetKey()))
 					}
 					responses = append(responses, &raft_cmdpb.Response{
 						CmdType: r.CmdType,
@@ -343,17 +355,21 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	kvWB.MustWriteToDB(d.ctx.engine.Kv)
 
 	// toPrint += fmt.Sprintf("+++++[id=%d] what's in ready -> %v\n", d.PeerId(), rd)
-	toPrint += fmt.Sprintf("+++++[id=%d] persisting regionLocalState: %v\n", d.PeerId(), regionLocalState)
-	toPrint += fmt.Sprintf("+++++[id=%d] persisting applyState: %v\n", d.PeerId(), d.peerStorage.applyState)
+	// toPrint += fmt.Sprintf("+++++[id=%d] persisting regionLocalState: %v\n", d.PeerId(), regionLocalState)
 	// toPrint += fmt.Sprintf("+++++[id=%d] finish writing to KV store, len(rd.CommittedEntries):%d \n", d.PeerId(), len(rd.CommittedEntries))
-	toPrint += fmt.Sprintf("+++++[id=%d] latest RaftLocalState in memory: %v, peerCache: %v, d.ctx.storeMeta.regionRanges: %v, d.ctx.storeMeta.regions: %v\n",
-		d.PeerId(), d.peerStorage.raftState, d.peerCache, d.ctx.storeMeta.regionRanges, d.ctx.storeMeta.regions)
+	toPrint += fmt.Sprintf("+++++[id=%d] latest RaftLocalState: %v, peerCache: %v\n",
+		d.PeerId(), d.peerStorage.raftState, d.peerCache)
+	toPrint += fmt.Sprintf("+++++[id=%d] d.ctx.storeMeta.regions: %v\n", d.PeerId(), d.ctx.storeMeta.regions)
+	toPrint += fmt.Sprintf("+++++[id=%d] persisted RaftApplyState: %v\n",
+		d.PeerId(), d.peerStorage.applyState)
+	toPrint += fmt.Sprintf("+++++[id=%d] applied index: %v, region epoch: %v\n",
+		d.PeerId(), d.peerStorage.applyState.AppliedIndex, d.peerStorage.region.RegionEpoch)
 	// Opening a transaction here to ensure all previously writes are visible.
 	for _, cb := range cbsForRead {
 		cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
 	}
 
-	if len(toPrint) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil) {
+	if len(rd.CommittedEntries) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil) {
 		// if len(toPrint) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil || d.Meta.GetId() == 2 || d.Meta.GetId() == 3) {
 		fmt.Println(toPrint)
 		// log.Warn(toPrint)
@@ -387,7 +403,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				log.Warnf("[id=%d] ignore messge %v to peer %d, it may have been removed just now", d.Meta.GetId(), msg, msg.To)
 				continue
 			} else {
-				log.Warnf("[id=%d] got ToPeer %d from peerCache", d.Meta.GetId(), msg.To)
+				// log.Warnf("[id=%d] got ToPeer %d from peerCache", d.Meta.GetId(), msg.To)
 			}
 		}
 

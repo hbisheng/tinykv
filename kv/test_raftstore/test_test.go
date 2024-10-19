@@ -634,6 +634,11 @@ func TestConfChangeRemoveLeader3B(t *testing.T) {
 	MustGetEqual(cluster.engines[1], []byte("k3"), []byte("v3"))
 }
 
+func TestRandomConfChange3B(t *testing.T) {
+	// Test: restarts, snapshots, conf change, one client (3B) ...
+	GenericTest(t, "3B", 1, false, false, false, -1, true, false)
+}
+
 func TestConfChangeRecover3B(t *testing.T) {
 	// Test: restarts, snapshots, conf change, one client (3B) ...
 	GenericTest(t, "3B", 1, false, true, false, -1, true, false)
