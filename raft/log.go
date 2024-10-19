@@ -77,6 +77,15 @@ func newLog(storage Storage) *RaftLog {
 	if firstIndex > 0 {
 		latestSnapIndex = firstIndex - 1
 		entries[0].Index = latestSnapIndex
+
+		// If you don't set the term, restarting a node that just applied a
+		// snapshot will result in endless loop.
+		term, err := storage.Term(latestSnapIndex)
+		if err != nil {
+			panic(err.Error())
+		}
+		entries[0].Term = term
+
 		// for i := 1; uint64(i) < firstIndex; i++ {
 		// 	entries = append(entries, pb.Entry{Index: uint64(i), Data: []byte("oooooo")}) // dummy entry at position 0.
 		// }
