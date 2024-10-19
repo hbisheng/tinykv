@@ -1,9 +1,11 @@
 package raftstore
 
 import (
+	"bytes"
 	"fmt"
 	"time"
 
+	"github.com/Connor1996/badger"
 	"github.com/Connor1996/badger/y"
 	"github.com/golang/protobuf/proto"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
@@ -41,6 +43,46 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 		peer: peer,
 		ctx:  ctx,
 	}
+}
+
+func (d *peerMsgHandler) debugRegionLocalState() {
+	// Scan region meta to get saved regions.
+	startKey := meta.RegionMetaMinKey
+	endKey := meta.RegionMetaMaxKey
+
+	kvEngine := d.ctx.engine.Kv
+
+	kvEngine.View(func(txn *badger.Txn) error {
+		// get all regions from RegionLocalState
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		for it.Seek(startKey); it.Valid(); it.Next() {
+			item := it.Item()
+			if bytes.Compare(item.Key(), endKey) >= 0 {
+				break
+			}
+			regionID, suffix, err := meta.DecodeRegionMetaKey(item.Key())
+			if err != nil {
+				return err
+			}
+			if suffix != meta.RegionStateSuffix {
+				continue
+			}
+			val, err := item.Value()
+			if err != nil {
+				return errors.WithStack(err)
+			}
+
+			localState := new(rspb.RegionLocalState)
+			err = localState.Unmarshal(val)
+			if err != nil {
+				return errors.WithStack(err)
+			}
+
+			log.Warnf("[id=%d][store=%d] region in key: %v, region state: %v", d.Meta.GetId(), d.storeID(), regionID, localState)
+		}
+		return nil
+	})
 }
 
 func (d *peerMsgHandler) HandleRaftReady() {
@@ -343,41 +385,48 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		d.peerStorage.applyState.AppliedIndex = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
 	}
 
-	// Update the KVs and the apply/region at the same transaction
-	regionLocalState := new(rspb.RegionLocalState)
-	regionLocalState.State = rspb.PeerState_Normal // what if this node is removed?
-	if removedFromCluster || d.stopped {
-		regionLocalState.State = rspb.PeerState_Tombstone
-	}
-	regionLocalState.Region = d.peerStorage.region
-	kvWB.SetMeta(meta.RegionStateKey(d.peerStorage.region.GetId()), regionLocalState)
+	// Don't persist any state if a new peer hasn't received the snapshot. It
+	// can send out messages of course. If removedFromCluster is true and d is
+	// uninitialized, this peer is the last peer of the region and it's getting
+	// removed.
+	if d.isInitialized() || removedFromCluster {
+		// Update the KVs and the apply/region at the same transaction
+		regionLocalState := new(rspb.RegionLocalState)
+		regionLocalState.State = rspb.PeerState_Normal // what if this node is removed?
+		if removedFromCluster || d.stopped {
+			regionLocalState.State = rspb.PeerState_Tombstone
+		}
+		regionLocalState.Region = d.peerStorage.region
+		kvWB.SetMeta(meta.RegionStateKey(d.peerStorage.region.GetId()), regionLocalState)
 
-	// d.peerStorage.applyState.TruncatedState is updated in admin command when needed.
-	// Inefficiency: no need to write to disk if there's no change.
-	kvWB.SetMeta(meta.ApplyStateKey(d.peerStorage.region.GetId()), d.peerStorage.applyState)
-	kvWB.MustWriteToDB(d.ctx.engine.Kv)
+		// d.peerStorage.applyState.TruncatedState is updated in admin command when needed.
+		// Inefficiency: no need to write to disk if there's no change.
+		kvWB.SetMeta(meta.ApplyStateKey(d.peerStorage.region.GetId()), d.peerStorage.applyState)
+		kvWB.MustWriteToDB(d.ctx.engine.Kv)
 
-	// toPrint += fmt.Sprintf("+++++[id=%d] what's in ready -> %v\n", d.PeerId(), rd)
-	// toPrint += fmt.Sprintf("+++++[id=%d] finish writing to KV store, len(rd.CommittedEntries):%d \n", d.PeerId(), len(rd.CommittedEntries))
+		// toPrint += fmt.Sprintf("+++++[id=%d] what's in ready -> %v\n", d.PeerId(), rd)
+		// toPrint += fmt.Sprintf("+++++[id=%d] finish writing to KV store, len(rd.CommittedEntries):%d \n", d.PeerId(), len(rd.CommittedEntries))
 
-	toPrint += fmt.Sprintf("+++++[id=%d] latest RaftLocalState: %v, peerCache: %v\n",
-		d.PeerId(), d.peerStorage.raftState, d.peerCache)
-	toPrint += fmt.Sprintf("+++++[id=%d] d.ctx.storeMeta.regions: %v\n", d.PeerId(), d.ctx.storeMeta.regions)
-	toPrint += fmt.Sprintf("+++++[id=%d][store_id=%d] persisted regionLocalState: %v\n", d.PeerId(), d.storeID(), regionLocalState)
-	toPrint += fmt.Sprintf("+++++[id=%d] persisted RaftApplyState: %v, store id: %v\n",
-		d.PeerId(), d.peerStorage.applyState, d.storeID())
-	toPrint += fmt.Sprintf("+++++[id=%d] applied index: %v, region epoch: %v\n",
-		d.PeerId(), d.peerStorage.applyState.AppliedIndex, d.peerStorage.region.RegionEpoch)
-	// Opening a transaction here to ensure all previously writes are visible.
-	for _, cb := range cbsForRead {
-		cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
-	}
+		toPrint += fmt.Sprintf("+++++[id=%d] latest RaftLocalState: %v, peerCache: %v\n",
+			d.PeerId(), d.peerStorage.raftState, d.peerCache)
+		toPrint += fmt.Sprintf("+++++[id=%d] d.ctx.storeMeta.regions: %v\n", d.PeerId(), d.ctx.storeMeta.regions)
+		toPrint += fmt.Sprintf("+++++[id=%d][store_id=%d] persisted regionLocalState: %v\n", d.PeerId(), d.storeID(), regionLocalState)
+		toPrint += fmt.Sprintf("+++++[id=%d] persisted RaftApplyState: %v, store id: %v\n",
+			d.PeerId(), d.peerStorage.applyState, d.storeID())
+		toPrint += fmt.Sprintf("+++++[id=%d] applied index: %v, region epoch: %v\n",
+			d.PeerId(), d.peerStorage.applyState.AppliedIndex, d.peerStorage.region.RegionEpoch)
+		// Opening a transaction here to ensure all previously writes are visible.
+		for _, cb := range cbsForRead {
+			cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
+		}
 
-	// if len(rd.CommittedEntries) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil) {
-	if len(rd.CommittedEntries) > 0 {
-		// if len(toPrint) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil || d.Meta.GetId() == 2 || d.Meta.GetId() == 3) {
-		fmt.Println(toPrint)
-		// log.Warn(toPrint)
+		// if len(rd.CommittedEntries) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil) {
+		if len(rd.CommittedEntries) > 0 {
+			// if true {
+			// if len(toPrint) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil || d.Meta.GetId() == 2 || d.Meta.GetId() == 3) {
+			fmt.Println(toPrint)
+			// log.Warn(toPrint)
+		}
 	}
 
 	for i := range rd.Messages {
@@ -558,19 +607,22 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		cb.Done(ErrResp(err))
 		return
 	}
+	nextIndex := d.peer.nextProposalIndex()
 	// Your Code Here (2B).
 	if msg.AdminRequest != nil &&
 		msg.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_TransferLeader &&
 		(d.Meta.Id == msg.AdminRequest.TransferLeader.Peer.Id || d.RaftGroup.IsTransferInProgress(msg.AdminRequest.TransferLeader.Peer.Id)) {
 		// no need to emit the log. The transfer is done. Just waiting for the propose to stop.
 	} else {
-		log.Warnf(
-			"[id=%d] receive propose cmd, header: %v, requests: %v, admin_req: %v",
-			d.PeerId(), msg.Header, msg.Requests, msg.AdminRequest,
-		)
-	}
 
-	nextIndex := d.peer.nextProposalIndex()
+		if msg.AdminRequest != nil {
+			log.Warnf(
+				"[id=%d] receive propose cmd, header: %v, requests: %v, admin_req: %v, index: %d",
+				d.PeerId(), msg.Header, msg.Requests, msg.AdminRequest, nextIndex,
+			)
+		}
+
+	}
 
 	if msg.AdminRequest != nil {
 		switch msg.AdminRequest.CmdType {

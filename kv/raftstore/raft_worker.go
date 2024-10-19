@@ -48,14 +48,19 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 		for i := 0; i < pending; i++ {
 			msgs = append(msgs, <-rw.raftCh)
 		}
+
 		peerStateMap := make(map[uint64]*peerState)
-		for _, msg := range msgs {
+		for i, msg := range msgs {
 			peerState := rw.getPeerState(peerStateMap, msg.RegionID)
 			// fmt.Printf("+++++ raft_worker processing msg (type=%v), peer state: %+v\n", msg.Type, peerState)
 			if peerState == nil {
 				continue
 			}
 			newPeerMsgHandler(peerState.peer, rw.ctx).HandleMsg(msg)
+
+			// if i == len(msgs)-1 {
+			// 	newPeerMsgHandler(peerState.peer, rw.ctx).debugRegionLocalState()
+			// }
 		}
 		for _, peerState := range peerStateMap {
 			newPeerMsgHandler(peerState.peer, rw.ctx).HandleRaftReady()

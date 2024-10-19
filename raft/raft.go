@@ -945,13 +945,13 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		// 		"+++++[id=%d][term=%d] \tlatest_entries[%d]: %s\n",
 		// 		r.id, r.Term, i, entryStr)
 		// }
-		fmt.Print(toPrint)
+		// fmt.Print(toPrint)
 
 		r.broadcastAppend()
 	case pb.MessageType_MsgAppendResponse:
 		if m.Reject {
 			// prevNext := r.Prs[m.From].Next
-			log.Warnf("[id=%d] received rejection, set next for id=%d to %d", r.id, m.From, m.Index)
+			// log.Warnf("[id=%d] received rejection, set next for id=%d to %d", r.id, m.From, m.Index)
 			r.Prs[m.From].Next = m.Index
 			if r.Prs[m.From].Next <= r.Prs[m.From].Match {
 				// It's possible for Match to go backward.
@@ -1100,7 +1100,7 @@ func (r *Raft) maybeAdvanceCommit() {
 		// fmt.Print(toPrint)
 		if prss != r.lastLoggedProgress {
 			r.lastLoggedProgress = prss
-			log.Warnf(
+			log.Infof(
 				"[id=%d][term=%d] on leader, progress(r.Prs):%+v",
 				r.id, r.Term, prss)
 
@@ -1124,22 +1124,15 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 	term, err := r.RaftLog.Term(m.Index)
 	if err != nil || term != m.LogTerm {
-		var entriesStr string
-		if len(m.Entries) == 0 {
-			entriesStr = "0 entry"
-		} else {
-			entriesStr = fmt.Sprintf(
-				"(idx=%d,term=%d)~(idx=%d,term=%d)",
-				m.Entries[0].Index, m.Entries[0].Term,
-				m.Entries[len(m.Entries)-1].Index, m.Entries[len(m.Entries)-1].Term,
-			)
-		}
-
-		// if r.RaftLog.latestSnapIndex != 0 {
-		// 	log.Warnf(
-		// 		"+++++[id=%d][term=%d] follower reject, m.Index=%d, m.LogTerm=%d, entries=%s, my log term=%v, my latest snap idx=%d, my li=%d, err=%v\n",
-		// 		r.id, r.Term, m.Index, m.LogTerm, entriesStr, term, r.RaftLog.latestSnapIndex, r.RaftLog.LastIndex(), err)
-		// 	panic("stop to debug")
+		// var entriesStr string
+		// if len(m.Entries) == 0 {
+		// 	entriesStr = "0 entry"
+		// } else {
+		// 	entriesStr = fmt.Sprintf(
+		// 		"(idx=%d,term=%d)~(idx=%d,term=%d)",
+		// 		m.Entries[0].Index, m.Entries[0].Term,
+		// 		m.Entries[len(m.Entries)-1].Index, m.Entries[len(m.Entries)-1].Term,
+		// 	)
 		// }
 
 		// .......(case A)......... latestSnapIndex .....(case B)....... LastIndex() .......(case C).........
@@ -1150,9 +1143,9 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		}
 
 		// reject
-		fmt.Printf(
-			"+++++[id=%d][term=%d] follower reject, nextIndex=%d, m.Index=%d, m.LogTerm=%d, entries=%s, my log term=%v, my latest snap idx=%d, my li=%d, err=%v\n",
-			r.id, r.Term, nextIndex, m.Index, m.LogTerm, entriesStr, term, r.RaftLog.latestSnapIndex, r.RaftLog.LastIndex(), err)
+		// fmt.Printf(
+		// 	"+++++[id=%d][term=%d] follower reject, nextIndex=%d, m.Index=%d, m.LogTerm=%d, entries=%s, my log term=%v, my latest snap idx=%d, my li=%d, err=%v\n",
+		// 	r.id, r.Term, nextIndex, m.Index, m.LogTerm, entriesStr, term, r.RaftLog.latestSnapIndex, r.RaftLog.LastIndex(), err)
 
 		r.msgs = append(r.msgs, pb.Message{
 			MsgType: pb.MessageType_MsgAppendResponse,

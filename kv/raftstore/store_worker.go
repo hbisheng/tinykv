@@ -132,12 +132,13 @@ func (d *storeWorker) checkMsg(msg *rspb.RaftMessage) (bool, error) {
 		return false, errors.Errorf("region %d not exists but not tombstone: %s", regionID, localState)
 	}
 	log.Debugf("region %d in tombstone state: %s", regionID, localState)
+	log.Warnf("region %d in tombstone state: %s", regionID, localState)
 	region := localState.Region
 	regionEpoch := region.RegionEpoch
 	// The region in this peer is already destroyed
 	if util.IsEpochStale(fromEpoch, regionEpoch) {
-		log.Infof("tombstone peer receives a stale message. region_id:%d, from_region_epoch:%s, current_region_epoch:%s, msg_type:%s",
-			regionID, fromEpoch, regionEpoch, msgType)
+		log.Infof("tombstone peer receives a stale message. region_id:%d, from_region_epoch:%s, current_region_epoch:%s, msg_type:%s, from peer:%v, to peer:%v",
+			regionID, fromEpoch, regionEpoch, msgType, msg.FromPeer, msg.ToPeer)
 		notExist := util.FindPeer(region, fromStoreID) == nil
 		handleStaleMsg(d.ctx.trans, msg, regionEpoch, isVoteMsg && notExist)
 		return true, nil
@@ -182,7 +183,8 @@ func (d *storeWorker) onRaftMessage(msg *rspb.RaftMessage) error {
 	if err != nil {
 		return err
 	}
-	log.Warnf("calling maybeCreatePeer, created:%v, err:%v", created, err)
+	log.Warnf("calling maybeCreatePeer, created:%v, err:%v, msg type: %v, msg from:%v msg to: %v",
+		created, err, msg.Message.MsgType, msg.Message.From, msg.Message.To)
 	if !created {
 		return nil
 	}
