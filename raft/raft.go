@@ -827,10 +827,10 @@ func (r *Raft) stepLeader(m pb.Message) error {
 
 		if r.leadTransferee != None {
 			if r.leadTransferee == m.From {
-				fmt.Printf(
-					"+++++[id=%d][term=%d] (leader transfer) to id=%d is in progress, it's not ready yet!\n",
-					r.id, r.Term, m.From,
-				)
+				// fmt.Printf(
+				// 	"+++++[id=%d][term=%d] (leader transfer) to id=%d is in progress, it's not ready yet!\n",
+				// 	r.id, r.Term, m.From,
+				// )
 				return nil
 			} else {
 				fmt.Printf(

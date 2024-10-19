@@ -353,7 +353,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
 	}
 
-	if len(toPrint) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil || d.Meta.GetId() == 2 || d.Meta.GetId() == 3) {
+	if len(toPrint) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil) {
+		// if len(toPrint) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil || d.Meta.GetId() == 2 || d.Meta.GetId() == 3) {
 		fmt.Println(toPrint)
 		// log.Warn(toPrint)
 	}
@@ -386,7 +387,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				log.Warnf("[id=%d] ignore messge %v to peer %d, it may have been removed just now", d.Meta.GetId(), msg, msg.To)
 				continue
 			} else {
-				log.Errorf("[id=%d] got ToPeer %d from peerCache", d.Meta.GetId(), msg.To)
+				log.Warnf("[id=%d] got ToPeer %d from peerCache", d.Meta.GetId(), msg.To)
 			}
 		}
 
@@ -539,7 +540,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	// Your Code Here (2B).
 	if msg.AdminRequest != nil &&
 		msg.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_TransferLeader &&
-		d.Meta.Id == msg.AdminRequest.TransferLeader.Peer.Id {
+		(d.Meta.Id == msg.AdminRequest.TransferLeader.Peer.Id || d.RaftGroup.IsTransferInProgress(msg.AdminRequest.TransferLeader.Peer.Id)) {
 		// no need to emit the log. The transfer is done. Just waiting for the propose to stop.
 	} else {
 		log.Warnf(
@@ -568,10 +569,27 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 			}
 			cb.Done(res)
 			return
-			//
 		case raft_cmdpb.AdminCmdType_ChangePeer:
 			changeType := msg.AdminRequest.ChangePeer.ChangeType
 			changePeer := msg.AdminRequest.ChangePeer.Peer
+
+			if changeType == eraftpb.ConfChangeType_RemoveNode &&
+				changePeer.Id == d.Meta.Id &&
+				d.peer.RaftGroup.Raft.State == raft.StateLeader {
+				// Removing a leader. must transfer the leadership out first.
+				var maxProgress uint64
+				var maxProgressPeer uint64
+				for peer, pr := range d.peer.RaftGroup.GetProgress() {
+					if pr.Match > uint64(maxProgress) && peer != d.Meta.GetId() {
+						maxProgress = pr.Match
+						maxProgressPeer = peer
+					}
+				}
+
+				log.Errorf("[id=%d] transferring leader to %d because I'm being removed", d.Meta.Id, maxProgressPeer)
+				d.RaftGroup.TransferLeader(maxProgressPeer)
+				return
+			}
 
 			changePeerByte, err := changePeer.Marshal()
 			if err != nil {
@@ -710,10 +728,10 @@ func (d *peerMsgHandler) onRaftMsg(msg *rspb.RaftMessage) error {
 		return nil
 	}
 
-	if _, ok := d.peerCache[msg.GetFromPeer().GetId()]; !ok {
-		log.Errorf("[id=%d] inserting peer %d to peer cache due to msg %v",
-			d.Meta.GetId(), msg.GetFromPeer().GetId(), msg)
-	}
+	// if _, ok := d.peerCache[msg.GetFromPeer().GetId()]; !ok {
+	// 	log.Infof("[id=%d] inserting peer %d to peer cache due to msg %v",
+	// 		d.Meta.GetId(), msg.GetFromPeer().GetId(), msg)
+	// }
 	d.insertPeerCache(msg.GetFromPeer())
 	err = d.RaftGroup.Step(*msg.GetMessage())
 	if err != nil {

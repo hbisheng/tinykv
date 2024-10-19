@@ -244,3 +244,8 @@ func (rn *RawNode) GetProgress() map[uint64]Progress {
 func (rn *RawNode) TransferLeader(transferee uint64) {
 	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
 }
+
+// I added this
+func (rn *RawNode) IsTransferInProgress(transferee uint64) bool {
+	return rn.Raft.leadTransferee == transferee
+}
