@@ -3,6 +3,8 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/Connor1996/badger"
@@ -83,6 +85,45 @@ func (d *peerMsgHandler) debugRegionLocalState() {
 		}
 		return nil
 	})
+}
+
+func (d *peerMsgHandler) splitFromOldRegion(
+	oldRegion *metapb.Region,
+	splitRequest *raft_cmdpb.SplitRequest,
+) *metapb.Region {
+	newRegion := new(metapb.Region)
+	newRegion.Id = splitRequest.NewRegionId
+	newRegion.StartKey = splitRequest.SplitKey
+	newRegion.EndKey = oldRegion.EndKey
+
+	newEpoch := new(metapb.RegionEpoch)
+	newEpoch.ConfVer = oldRegion.RegionEpoch.ConfVer
+	newEpoch.Version = oldRegion.RegionEpoch.Version + 1 // Increment the epoch version
+	newRegion.RegionEpoch = newEpoch
+
+	sort.Slice(oldRegion.Peers, func(i, j int) bool { return oldRegion.Peers[i].Id < oldRegion.Peers[j].Id })
+	for i, newId := range splitRequest.NewPeerIds {
+		if i >= len(oldRegion.Peers) {
+			break
+		}
+
+		newPeer := new(metapb.Peer)
+		newPeer.Id = newId
+		newPeer.StoreId = oldRegion.Peers[i].StoreId
+		newRegion.Peers = append(newRegion.Peers, newPeer)
+	}
+	return newRegion
+}
+
+func keyInRange(region *metapb.Region, key []byte) bool {
+	if bytes.Compare(key, region.StartKey) < 0 {
+		return false
+	}
+
+	if engine_util.ExceedEndKey(key, region.EndKey) {
+		return false
+	}
+	return true
 }
 
 func (d *peerMsgHandler) HandleRaftReady() {
@@ -301,6 +342,34 @@ func (d *peerMsgHandler) HandleRaftReady() {
 							}
 						})
 					}
+				case raft_cmdpb.AdminCmdType_Split:
+					// TODO: What if there are duplicate split commands?
+					// Then there will be multiple splits. This operation is not idempotent.
+
+					oldRegion := d.peerStorage.region
+					newRegion := d.splitFromOldRegion(oldRegion, cmdRequest.AdminRequest.Split)
+					log.Errorf("[id=%d] new region %v created, split request %v", d.PeerId(), newRegion, cmdRequest.AdminRequest.Split)
+					// Update old region
+					oldRegion.EndKey = cmdRequest.AdminRequest.Split.SplitKey
+					oldRegion.RegionEpoch.Version += 1
+
+					newPeer, err := createPeer(d.storeID(), d.ctx.cfg, d.ctx.regionTaskSender, d.ctx.engine, newRegion)
+					if err != nil {
+						// this peer doesn't need to split
+						continue
+					}
+					d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: newRegion})
+					d.ctx.storeMeta.regions[newRegion.Id] = newRegion
+
+					// register region so it can start receiving message.
+					d.ctx.router.register(newPeer)
+					// Send a message to it to activate it?
+					d.ctx.router.send(newRegion.Id, message.Msg{RegionID: newRegion.Id, Type: message.MsgTypeStart})
+
+					// Respond to the client that the split succeeded? Is there a need?
+					if proposal != nil {
+
+					}
 				default:
 					panic(fmt.Sprintf("unexpected admin request type %v", cmdRequest.AdminRequest))
 				}
@@ -309,69 +378,78 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 			cmdResp := newCmdResp()
 			responses := []*raft_cmdpb.Response{}
-			// do the operation and return results.
-			for _, r := range cmdRequest.Requests {
-				if r.CmdType == raft_cmdpb.CmdType_Put {
-					kvWB.SetCF(r.Put.GetCf(), r.Put.GetKey(), r.Put.GetValue())
-					if proposal != nil {
+
+			err = util.CheckRegionEpoch(cmdRequest, d.Region(), true)
+			if err != nil {
+				if proposal != nil {
+					log.Errorf("[id=%d] CheckRegionEpoch returned %v, idx=%d, cmdRequest:%v", d.PeerId(), err, e.Index, cmdRequest)
+					BindRespError(cmdResp, err)
+				}
+			} else {
+				// do the operation and return results.
+				for _, r := range cmdRequest.Requests {
+					if r.CmdType == raft_cmdpb.CmdType_Put {
+						kvWB.SetCF(r.Put.GetCf(), r.Put.GetKey(), r.Put.GetValue())
+						// if proposal != nil {
 						// toPrint += fmt.Sprintf("+++++[id=%d] writing [cf=%v,key=%v,val=%v]\n",
 						// 	d.PeerId(), r.Put.GetCf(), string(r.Put.GetKey()), string(r.Put.GetValue()))
-					}
-					responses = append(responses, &raft_cmdpb.Response{
-						CmdType: r.CmdType,
-						Put:     &raft_cmdpb.PutResponse{},
-					})
-				} else if r.CmdType == raft_cmdpb.CmdType_Delete {
-					kvWB.DeleteCF(r.Delete.GetCf(), r.Delete.GetKey())
-					if proposal != nil {
+						// }
+						responses = append(responses, &raft_cmdpb.Response{
+							CmdType: r.CmdType,
+							Put:     &raft_cmdpb.PutResponse{},
+						})
+					} else if r.CmdType == raft_cmdpb.CmdType_Delete {
+						kvWB.DeleteCF(r.Delete.GetCf(), r.Delete.GetKey())
+						// if proposal != nil {
 						// toPrint += fmt.Sprintf("+++++[id=%d] deleting [cf=%v,key=%v]\n",
 						// 	d.PeerId(), r.Delete.GetCf(), string(r.Delete.GetKey()))
-					}
-					responses = append(responses, &raft_cmdpb.Response{
-						CmdType: r.CmdType,
-						Delete:  &raft_cmdpb.DeleteResponse{},
-					})
-				} else if r.CmdType == raft_cmdpb.CmdType_Snap {
-					// if proposal != nil {
-					// 	toPrint += fmt.Sprintf("+++++[id=%d] snapshot command, openning a new transaction! returning info %v \n", d.PeerId(), d.peerStorage.Region())
-					// }
+						// }
+						responses = append(responses, &raft_cmdpb.Response{
+							CmdType: r.CmdType,
+							Delete:  &raft_cmdpb.DeleteResponse{},
+						})
+					} else if r.CmdType == raft_cmdpb.CmdType_Snap {
+						// if proposal != nil {
+						// 	toPrint += fmt.Sprintf("+++++[id=%d] snapshot command, openning a new transaction! returning info %v \n", d.PeerId(), d.peerStorage.Region())
+						// }
 
-					// readResponses[len(responses)] = true
-					responses = append(responses, &raft_cmdpb.Response{
-						CmdType: r.CmdType,
-						Snap: &raft_cmdpb.SnapResponse{
-							Region: d.peerStorage.Region(),
-						},
-					})
+						// readResponses[len(responses)] = true
+						responses = append(responses, &raft_cmdpb.Response{
+							CmdType: r.CmdType,
+							Snap: &raft_cmdpb.SnapResponse{
+								Region: d.peerStorage.Region(),
+							},
+						})
 
-					if proposal != nil {
-						cbsForRead = append(cbsForRead, proposal.cb)
-						// proposal.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
-					}
-				} else if r.CmdType == raft_cmdpb.CmdType_Get {
-					resp := &raft_cmdpb.GetResponse{}
-					cf := r.Get.Cf
-					key := r.Get.Key
-
-					// populate the actual result later.
-					postWriteFuncs = append(postWriteFuncs, func() {
-						val, err := engine_util.GetCF(d.ctx.engine.Kv, cf, key)
-						if err != nil {
-							BindRespError(cmdResp, err)
-						} else {
-							resp.Value = val
+						if proposal != nil {
+							cbsForRead = append(cbsForRead, proposal.cb)
+							// proposal.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
 						}
-						// log.Errorf(
-						// 	"[id=%d] engine_util.GetCF, idx=%d, cf=%v, key=%v, val=%v",
-						// 	d.Meta.GetId(), e.Index, cf, string(key), string(val))
-					})
+					} else if r.CmdType == raft_cmdpb.CmdType_Get {
+						resp := &raft_cmdpb.GetResponse{}
+						cf := r.Get.Cf
+						key := r.Get.Key
 
-					responses = append(responses, &raft_cmdpb.Response{
-						CmdType: r.CmdType,
-						Get:     resp,
-					})
-				} else {
-					panic(fmt.Sprintf("unexpected command: %v", r))
+						// populate the actual result later.
+						postWriteFuncs = append(postWriteFuncs, func() {
+							val, err := engine_util.GetCF(d.ctx.engine.Kv, cf, key)
+							if err != nil {
+								BindRespError(cmdResp, err)
+							} else {
+								resp.Value = val
+							}
+							// log.Errorf(
+							// 	"[id=%d] engine_util.GetCF, idx=%d, cf=%v, key=%v, val=%v",
+							// 	d.Meta.GetId(), e.Index, cf, string(key), string(val))
+						})
+
+						responses = append(responses, &raft_cmdpb.Response{
+							CmdType: r.CmdType,
+							Get:     resp,
+						})
+					} else {
+						panic(fmt.Sprintf("unexpected command: %v", r))
+					}
 				}
 			}
 
@@ -420,11 +498,13 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
 		}
 
-		// if len(rd.CommittedEntries) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil) {
-		if len(rd.CommittedEntries) > 0 {
+		if len(rd.CommittedEntries) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil) {
+			// if len(rd.CommittedEntries) > 0 {
 			// if true {
 			// if len(toPrint) > 0 && (d.RaftGroup.Raft.State == raft.StateLeader || rd.Snapshot.Metadata != nil || d.Meta.GetId() == 2 || d.Meta.GetId() == 3) {
-			fmt.Println(toPrint)
+
+			// fmt.Println(toPrint)
+
 			// log.Warn(toPrint)
 		}
 	}
@@ -470,12 +550,12 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		}
 
 		if err := d.ctx.trans.Send(raftMsg); err != nil {
-			// if !strings.Contains(err.Error(), "is dropped") {
-			log.Warnf(
-				"d.ctx.trans.Send() id=%d->id=%d msg: %v, returned error: %s",
-				msg.From, msg.To, msg, err.Error(),
-			)
-			// }
+			if !strings.Contains(err.Error(), "is dropped") {
+				log.Warnf(
+					"d.ctx.trans.Send() id=%d->id=%d msg: %v, returned error: %s",
+					msg.From, msg.To, msg, err.Error(),
+				)
+			}
 		}
 	}
 
@@ -537,9 +617,9 @@ func findPeerByID(peers []*metapb.Peer, id uint64) (*metapb.Peer, error) {
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
 	// fmt.Printf("+++++ HandleMsg is called (type=%v)\n", msg.Type)
 
-	if d.Meta.GetId() == 2 {
-		// log.Errorf("[id=2] HandleMsg is called, d info: %+v", d)
-	}
+	// if d.Meta.GetId() == 2 {
+	// log.Errorf("[id=2] HandleMsg is called, d info: %+v", d)
+	// }
 	switch msg.Type {
 	case message.MsgTypeRaftMessage:
 		raftMsg := msg.Data.(*rspb.RaftMessage)
@@ -607,6 +687,30 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		cb.Done(ErrResp(err))
 		return
 	}
+
+	for _, request := range msg.Requests {
+		var key []byte
+		switch request.CmdType {
+		case raft_cmdpb.CmdType_Put:
+			key = request.Put.Key
+		case raft_cmdpb.CmdType_Delete:
+			key = request.Delete.Key
+		case raft_cmdpb.CmdType_Get:
+			key = request.Get.Key
+		}
+
+		if key != nil {
+			if err := util.CheckKeyInRegion(key, d.Region()); err != nil {
+				log.Warnf(
+					"[id=%d] ignore propose, key not in range, header: %v, requests: %v, admin_req: %v",
+					d.PeerId(), msg.Header, msg.Requests, msg.AdminRequest,
+				)
+				cb.Done(ErrResp(err))
+				return
+			}
+		}
+	}
+
 	nextIndex := d.peer.nextProposalIndex()
 	// Your Code Here (2B).
 	if msg.AdminRequest != nil &&
@@ -614,14 +718,12 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		(d.Meta.Id == msg.AdminRequest.TransferLeader.Peer.Id || d.RaftGroup.IsTransferInProgress(msg.AdminRequest.TransferLeader.Peer.Id)) {
 		// no need to emit the log. The transfer is done. Just waiting for the propose to stop.
 	} else {
-
-		if msg.AdminRequest != nil {
-			log.Warnf(
-				"[id=%d] receive propose cmd, header: %v, requests: %v, admin_req: %v, index: %d",
-				d.PeerId(), msg.Header, msg.Requests, msg.AdminRequest, nextIndex,
-			)
-		}
-
+		// if msg.AdminRequest != nil {
+		log.Warnf(
+			"[id=%d] receive propose cmd, header: %v, requests: %v, admin_req: %v, index: %d",
+			d.PeerId(), msg.Header, msg.Requests, msg.AdminRequest, nextIndex,
+		)
+		// }
 	}
 
 	if msg.AdminRequest != nil {
@@ -698,7 +800,13 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 
 			return
 		case raft_cmdpb.AdminCmdType_CompactLog:
-
+			// continue with the normal proposal.
+		case raft_cmdpb.AdminCmdType_Split:
+			// continue with the split proposal.
+			splitRequest := msg.AdminRequest.Split
+			if len(d.peerStorage.region.Peers) != len(splitRequest.GetNewPeerIds()) {
+				panic(fmt.Sprintf("hey bro it's not good, d.peerStorage.region: %v, splitRequest: %v", d.peerStorage.region, splitRequest))
+			}
 		default:
 			panic(fmt.Sprintf("unknown raft admin command %v", msg.AdminRequest))
 		}
