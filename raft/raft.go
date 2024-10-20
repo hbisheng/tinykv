@@ -221,12 +221,12 @@ func newRaft(c *Config) *Raft {
 		// raftLog.entries = append(raftLog.entries, pb.Entry{Data: []byte("dummy entry")})
 	}
 
-	li, _ := c.Storage.LastIndex()
+	// li, _ := c.Storage.LastIndex()
 
-	log.Warnf(
-		"+++++[id=%d] new raft node created with peers:%+v, hardState:%v, confState:%v, first index:%d, last index:%d, l.latestEntryIndex:%d, raftLog.entries: %d\n",
-		c.ID, prs, hardState, confState, fi, li, raftLog.latestSnapIndex, len(raftLog.entries),
-	)
+	// log.Warnf(
+	// 	"+++++[id=%d] new raft node created with peers:%+v, hardState:%v, confState:%v, first index:%d, last index:%d, l.latestEntryIndex:%d, raftLog.entries: %d\n",
+	// 	c.ID, prs, hardState, confState, fi, li, raftLog.latestSnapIndex, len(raftLog.entries),
+	// )
 	// for i, e := range raftLog.entries {
 	// 	fmt.Printf("+++++init entries[%d] %+v\n", i, e)
 	// }

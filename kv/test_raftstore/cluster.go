@@ -201,7 +201,7 @@ func (c *Cluster) Request(key []byte, reqs []*raft_cmdpb.Request, timeout time.D
 		}
 		return resp, txn
 	}
-	panic("request timeout")
+	panic(fmt.Sprintf("request timeout, key %v, reqs: %v", key, reqs))
 }
 
 func (c *Cluster) CallCommand(request *raft_cmdpb.RaftCmdRequest, timeout time.Duration) (*raft_cmdpb.RaftCmdResponse, *badger.Txn) {

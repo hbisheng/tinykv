@@ -345,10 +345,16 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				case raft_cmdpb.AdminCmdType_Split:
 					// TODO: What if there are duplicate split commands?
 					// Then there will be multiple splits. This operation is not idempotent.
+					splitRequest := cmdRequest.AdminRequest.Split
+					err := util.CheckKeyInRegion(splitRequest.SplitKey, d.Region())
+					if err != nil || bytes.Equal(splitRequest.SplitKey, d.Region().StartKey) {
+						log.Errorf("[store=%d][id=%d][region=%d] found invalid split key %v during apply (region=%v), ignore it",
+							d.storeID(), d.PeerId(), d.regionId, string(splitRequest.SplitKey), d.Region())
+						continue
+					}
 
 					oldRegion := d.peerStorage.region
 					newRegion := d.splitFromOldRegion(oldRegion, cmdRequest.AdminRequest.Split)
-					log.Errorf("[id=%d] new region %v created, split request %v", d.PeerId(), newRegion, cmdRequest.AdminRequest.Split)
 					// Update old region
 					oldRegion.EndKey = cmdRequest.AdminRequest.Split.SplitKey
 					oldRegion.RegionEpoch.Version += 1
@@ -358,13 +364,41 @@ func (d *peerMsgHandler) HandleRaftReady() {
 						// this peer doesn't need to split
 						continue
 					}
+					log.Errorf(
+						"[id=%d][region=%d] new peer id=%d, region=%d created during split",
+						d.PeerId(), d.regionId, newPeer.PeerId(), newRegion.Id,
+					)
 					d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: newRegion})
 					d.ctx.storeMeta.regions[newRegion.Id] = newRegion
 
 					// register region so it can start receiving message.
 					d.ctx.router.register(newPeer)
+					log.Errorf(
+						"[id=%d][region=%d] registered new peer %v",
+						d.PeerId(), d.regionId, newPeer,
+					)
 					// Send a message to it to activate it?
 					d.ctx.router.send(newRegion.Id, message.Msg{RegionID: newRegion.Id, Type: message.MsgTypeStart})
+					fromPeer := util.FindPeer(newRegion, d.storeID())
+					if d.RaftGroup.Raft.State == raft.StateLeader {
+						triggerLeaderMsg := &rspb.RaftMessage{
+							RegionId: newRegion.Id,
+							FromPeer: fromPeer,
+							ToPeer:   fromPeer,
+							Message: &eraftpb.Message{
+								MsgType: eraftpb.MessageType_MsgTimeoutNow,
+								Term:    meta.RaftInitLogTerm,
+								From:    newPeer.PeerId(),
+								To:      newPeer.PeerId(),
+							},
+							RegionEpoch: newRegion.RegionEpoch,
+						}
+
+						d.ctx.router.send(
+							newRegion.Id,
+							message.NewPeerMsg(message.MsgTypeRaftMessage, newRegion.Id, triggerLeaderMsg),
+						)
+					}
 
 					// Respond to the client that the split succeeded? Is there a need?
 					if proposal != nil {
@@ -413,11 +447,17 @@ func (d *peerMsgHandler) HandleRaftReady() {
 						// 	toPrint += fmt.Sprintf("+++++[id=%d] snapshot command, openning a new transaction! returning info %v \n", d.PeerId(), d.peerStorage.Region())
 						// }
 
+						regionRes := new(metapb.Region)
+						err := util.CloneMsg(d.Region(), regionRes)
+						if err != nil {
+							panic(err.Error())
+						}
+
 						// readResponses[len(responses)] = true
 						responses = append(responses, &raft_cmdpb.Response{
 							CmdType: r.CmdType,
 							Snap: &raft_cmdpb.SnapResponse{
-								Region: d.peerStorage.Region(),
+								Region: regionRes,
 							},
 						})
 
@@ -559,6 +599,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		}
 	}
 
+	d.sendPendingVote()
+
 	d.peer.RaftGroup.Advance(rd)
 
 	// Run these functions after the raft state (e.g. applied index) is updated.
@@ -575,6 +617,28 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			toPrint += fmt.Sprintf("+++++[id=%d] responded to proposal: %v\n", d.PeerId(), proposalsToRespond[i])
 		}
 	}
+}
+
+func (d *peerMsgHandler) sendPendingVote() {
+	var remaining []*rspb.RaftMessage
+	for i := range d.ctx.storeMeta.pendingVotes {
+		msg := d.ctx.storeMeta.pendingVotes[i]
+
+		peerState := d.ctx.router.get(msg.RegionId)
+		if peerState != nil {
+			d.ctx.router.send(
+				msg.RegionId,
+				message.NewPeerMsg(message.MsgTypeRaftMessage, msg.RegionId, msg),
+			)
+			log.Errorf(
+				"[id=%d][region=%d] send pending vote to peer %d, msg %v",
+				d.PeerId(), d.regionId, peerState.peer.Meta.Id, msg,
+			)
+		} else {
+			remaining = append(remaining, msg)
+		}
+	}
+	d.ctx.storeMeta.pendingVotes = remaining
 }
 
 func addPeer(peers []*metapb.Peer, peer *metapb.Peer) []*metapb.Peer {
@@ -633,7 +697,7 @@ func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
 		d.onTick()
 	case message.MsgTypeSplitRegion:
 		split := msg.Data.(*message.MsgSplitRegion)
-		log.Infof("%s on split with %v", d.Tag, split.SplitKey)
+		log.Infof("%s on split with %v", d.Tag, string(split.SplitKey))
 		d.onPrepareSplitRegion(split.RegionEpoch, split.SplitKey, split.Callback)
 	case message.MsgTypeRegionApproximateSize:
 		d.onApproximateRegionSize(msg.Data.(uint64))
@@ -720,8 +784,8 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	} else {
 		// if msg.AdminRequest != nil {
 		log.Warnf(
-			"[id=%d] receive propose cmd, header: %v, requests: %v, admin_req: %v, index: %d",
-			d.PeerId(), msg.Header, msg.Requests, msg.AdminRequest, nextIndex,
+			"[store=%d][id=%d] receive propose cmd, epoch:%v, header: %v, requests: %v, admin_req: %v, index: %d",
+			d.storeID(), d.PeerId(), d.Region(), msg.Header, msg.Requests, msg.AdminRequest, nextIndex,
 		)
 		// }
 	}
@@ -807,6 +871,18 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 			if len(d.peerStorage.region.Peers) != len(splitRequest.GetNewPeerIds()) {
 				panic(fmt.Sprintf("hey bro it's not good, d.peerStorage.region: %v, splitRequest: %v", d.peerStorage.region, splitRequest))
 			}
+
+			// check the validity of the split key
+			err := util.CheckKeyInRegion(splitRequest.SplitKey, d.Region())
+			if err != nil || bytes.Equal(splitRequest.SplitKey, d.Region().StartKey) {
+				log.Warnf(
+					"[id=%d] ignore split propose, split key %v not valid, my region: %v",
+					d.PeerId(), string(splitRequest.SplitKey), d.Region(),
+				)
+				cb.Done(ErrResp(err))
+				return
+			}
+
 		default:
 			panic(fmt.Sprintf("unknown raft admin command %v", msg.AdminRequest))
 		}
