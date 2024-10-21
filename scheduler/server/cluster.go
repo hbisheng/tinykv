@@ -280,6 +280,59 @@ func (c *RaftCluster) handleStoreHeartbeat(stats *schedulerpb.StoreStats) error 
 func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 	// Your Code Here (3C).
 
+	// 1. Check whether there is a region with the same Id in local storage. If there is and at least one of the heartbeats’ `conf_ver` and `version` is less than its, this heartbeat region is stale
+	// 2. If there isn’t, scan all regions that overlap with it. The heartbeats’ `conf_ver` and `version` should be greater or equal than all of them, or the region is stale.
+	// Then how the Scheduler determines whether it could skip this update? We can list some simple conditions:
+	// * If the new one’s `version` or `conf_ver` is greater than the original one, it cannot be skipped
+	// * If the leader changed,  it cannot be skipped
+	// * If the new one or original one has pending peer,  it cannot be skipped
+	// * If the ApproximateSize changed, it cannot be skipped
+	// * …
+
+	// Check stale heartbeats
+	epoch := region.GetRegionEpoch()
+
+	// if existingRegionInfo != nil {
+	// 	// check conf version and version
+	// 	existingEpoch := existingRegionInfo.GetRegionEpoch()
+	// 	if epoch.ConfVer < existingEpoch.ConfVer || epoch.Version < existingEpoch.Version {
+	// 		// return core.NewStoreNotFoundErr(storeID)
+	// 		return errors.New("stale heartbeat")
+	// 	}
+	// }
+
+	overlappedRegionsInfo := c.core.GetOverlaps(region)
+	existingRegionInfo := c.core.GetRegion(region.GetID())
+	if existingRegionInfo != nil {
+		overlappedRegionsInfo = append(overlappedRegionsInfo, existingRegionInfo)
+	}
+	for _, info := range overlappedRegionsInfo {
+		existingEpoch := info.GetRegionEpoch()
+		if epoch.ConfVer < existingEpoch.ConfVer || epoch.Version < existingEpoch.Version {
+			// return core.NewStoreNotFoundErr(storeID)
+			return errors.New(fmt.Sprintf("heartbeat is stale, confVer %v, ver %v, found %v", epoch.ConfVer, epoch.Version, info))
+		}
+	}
+
+	// Check unnecessary heartbeats
+	if existingRegionInfo != nil {
+		// compare with existing info
+		isNewer := region.GetRegionEpoch().ConfVer > existingRegionInfo.GetRegionEpoch().ConfVer ||
+			region.GetRegionEpoch().Version > existingRegionInfo.GetRegionEpoch().Version
+		isLeaderChanged := region.GetLeader().Id != existingRegionInfo.GetLeader().Id
+		isSizeChanged := region.GetApproximateSize() != existingRegionInfo.GetApproximateSize()
+		isTherePendingPeers := len(region.GetPendingPeers()) != 0 || len(existingRegionInfo.GetPendingPeers()) != 0
+		if isNewer || isLeaderChanged || isSizeChanged || isTherePendingPeers {
+			log.Info("must update")
+		}
+	}
+
+	// What if I skip nothing?
+
+	c.core.PutRegion(region)
+
+	// Which test checks this?
+	// c.core.UpdateStoreStatus()
 	return nil
 }
 
