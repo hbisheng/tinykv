@@ -182,8 +182,11 @@ func (s *testBalanceRegionSchedulerSuite) TestReplacePendingRegion3C(c *C) {
 	tc.AddLeaderRegion(1, 1, 2, 3)
 	tc.AddLeaderRegion(2, 1, 2, 3)
 	tc.AddLeaderRegion(3, 2, 1, 3)
+	// Region 3.
 	region := tc.GetRegion(3)
+	// Set a pending peer on region 3.
 	region = region.Clone(core.WithPendingPeers([]*metapb.Peer{region.GetStorePeer(1)}))
+	// Add region 3 to the cluster.
 	tc.PutRegion(region)
 
 	// region 3 has a pending peer
