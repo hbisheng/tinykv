@@ -84,6 +84,9 @@ type Config struct {
 	// Applied. If Applied is unset when restarting, raft might return previous
 	// applied entries. This is a very application dependent configuration.
 	Applied uint64
+
+	DebugRegionID uint64
+	DebugStoreID  uint64
 }
 
 func (c *Config) validate() error {
@@ -169,6 +172,9 @@ type Raft struct {
 	isSoftStateChanged bool
 
 	lastLoggedProgress string
+
+	DebugRegionID uint64
+	DebugStoreID  uint64
 }
 
 // newRaft return a raft peer with the given config
@@ -266,6 +272,8 @@ func newRaft(c *Config) *Raft {
 		electionTimeoutRandomized: electionTimeoutRandomized,
 
 		// applied: c.Applied,
+		DebugRegionID: c.DebugRegionID,
+		DebugStoreID:  c.DebugStoreID,
 	}
 	return r
 }
@@ -494,11 +502,13 @@ func (r *Raft) tick() {
 
 	if r.State == StateFollower || r.State == StateCandidate {
 		r.electionElapsed -= 1
+		log.Warningf("[store=%d][region=%d][id=%d][term=%d] r.electionElapsed: %d", r.DebugStoreID, r.DebugRegionID, r.id, r.Term, r.electionElapsed)
 		if r.electionElapsed == 0 {
 			// fmt.Printf("+++++[id=%d][term=%d] r.electionElapsed: %d\n", r.id, r.Term, r.electionElapsed)
 			r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
 		}
 	}
+
 }
 
 // becomeFollower transform this peer's state to Follower
@@ -535,12 +545,18 @@ func (r *Raft) becomeCandidate() {
 	r.electionElapsed = generateRandomizedElectionTimeout(r.electionTimeout)
 	r.electionTimeoutRandomized = r.electionElapsed
 
-	fmt.Printf("+++++[id=%d] become candidate at term %d, rand timeout %d, r.Prs: %v\n", r.id, r.Term, r.electionElapsed, r.Prs)
+	// fmt.Printf("+++++[id=%d] become candidate at term %d, rand timeout %d, r.Prs: %v\n", r.id, r.Term, r.electionElapsed, r.Prs)
+
+	log.Warningf("[store=%d][region=%d][id=%d] become candidate at term %d, rand timeout %d, r.Prs: %v",
+		r.DebugStoreID, r.DebugRegionID, r.id, r.Term, r.electionElapsed, r.progressStr())
+
 	// r.startNewElection()
 }
 
 func (r *Raft) startNewElection() {
-	fmt.Printf("+++++[id=%d][term=%d] startNewElection\n", r.id, r.Term)
+	// fmt.Printf("+++++[id=%d][term=%d] startNewElection\n", r.id, r.Term)
+	log.Warningf("[store=%d][region=%d][id=%d][term=%d] startNewElection, r.Prs: %v",
+		r.DebugStoreID, r.DebugRegionID, r.id, r.Term, r.progressStr())
 	// r.Term += 1
 
 	// Vote for itself.
@@ -564,7 +580,9 @@ func (r *Raft) becomeLeader() {
 	// NOTE: Leader should propose a noop entry on its term
 
 	// r.Term += 1
-	fmt.Printf("+++++[id=%d] BECOME LEADER at term %d, proposing noop entry\n", r.id, r.Term)
+	// fmt.Printf("+++++[id=%d] BECOME LEADER at term %d, proposing noop entry\n", r.id, r.Term)
+	log.Warningf("[store=%d][region=%d][id=%d][term=%d] become leader, rand timeout %d, r.Prs: %v",
+		r.DebugStoreID, r.DebugRegionID, r.id, r.Term, r.electionElapsed, r.progressStr())
 
 	r.isSoftStateChanged = true
 	r.State = StateLeader
@@ -673,21 +691,36 @@ func (r *Raft) Step(m pb.Message) error {
 
 		if r.Vote != m.From {
 			if r.Vote == None {
-				fmt.Printf(
-					"+++++[id=%d][term=%d] received vote request from %d at term %d, REJECTED because not up-to-date!\n",
-					r.id, r.Term, m.From, m.Term,
+				// fmt.Printf(
+				// 	"+++++[id=%d][term=%d] received vote request from %d at term %d, REJECTED because not up-to-date!\n",
+				// 	r.id, r.Term, m.From, m.Term,
+				// )
+
+				log.Warnf(
+					"[store=%d][region=%v][id=%d][term=%d] received vote request from %d at term %d, REJECTED because not up-to-date, m.Index:%v, m.LogTerm: %v, mine: %v, term %v!",
+					r.DebugStoreID, r.DebugRegionID, r.id, r.Term, m.From, m.Term, m.Index, m.LogTerm, r.RaftLog.LastIndex(), r.RaftLog.mustTerm(r.RaftLog.LastIndex()),
 				)
 			} else {
-				fmt.Printf(
-					"+++++[id=%d][term=%d] received vote request from %d at term %d, REJECTED! my vote: %d\n",
-					r.id, r.Term, m.From, m.Term, prevVote,
+				log.Warnf(
+					"[store=%d][region=%v][id=%d][term=%d] received vote request from %d at term %d, REJECTED! my vote: %d",
+					r.DebugStoreID, r.DebugRegionID, r.id, r.Term, m.From, m.Term, prevVote,
 				)
+
+				// fmt.Printf(
+				// 	"+++++[id=%d][term=%d] received vote request from %d at term %d, REJECTED! my vote: %d\n",
+				// 	r.id, r.Term, m.From, m.Term, prevVote,
+				// )
 			}
 		} else {
-			fmt.Printf(
-				"+++++[id=%d][term=%d] received vote request from %d at term %d, GRANTED\n",
-				r.id, r.Term, m.From, m.Term,
+			log.Warnf(
+				"[store=%v][region=%v][id=%d][term=%d] received vote request from %d at term %d, GRANTED",
+				r.DebugStoreID, r.DebugRegionID, r.id, r.Term, m.From, m.Term,
 			)
+
+			// fmt.Printf(
+			// 	"+++++[id=%d][term=%d] received vote request from %d at term %d, GRANTED\n",
+			// 	r.id, r.Term, m.From, m.Term,
+			// )
 		}
 		return nil
 	}
@@ -741,7 +774,10 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 				r.becomeLeader()
 			} else {
 				fmt.Printf("+++++[id=%d][term=%d] losing the election, r.votes: %v\n", r.id, r.Term, r.votes)
+				// keep your vote, don't vote again.
+				myVote := r.Vote
 				r.becomeFollower(r.Term, None)
+				r.Vote = myVote
 			}
 		}
 	case pb.MessageType_MsgAppend:

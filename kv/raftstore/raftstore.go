@@ -60,6 +60,17 @@ func (m *storeMeta) setRegion(region *metapb.Region, peer *peer) {
 
 // getOverlaps gets the regions which are overlapped with the specified region range.
 func (m *storeMeta) getOverlapRegions(region *metapb.Region) []*metapb.Region {
+
+	// log.Errorf("[store regions] getOverlapRegions is called with region:%v", region)
+	// for id, r := range m.regions {
+	// 	log.Errorf("[store regions] id:%v -> %v", id, r)
+	// }
+	// m.regionRanges.Ascend(func(i btree.Item) bool {
+	// 	result := i.(*regionItem)
+	// 	log.Errorf("[store regionRanges] %v", result.region)
+	// 	return true
+	// })
+
 	item := &regionItem{region: region}
 	var result *regionItem
 	// find is a helper function to find an item that contains the regions start key.

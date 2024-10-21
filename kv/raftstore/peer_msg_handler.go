@@ -190,8 +190,13 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		// This updates region in two places:
 		// 1. d.ctx.storeMeta.regions
 		// 2. d.peer.peerStorage.region
-		d.ctx.storeMeta.setRegion(snapData.Region, d.peer)
-		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: snapData.Region})
+		func() {
+			d.ctx.storeMeta.Lock()
+			defer d.ctx.storeMeta.Unlock()
+
+			d.ctx.storeMeta.setRegion(snapData.Region, d.peer)
+			d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: snapData.Region})
+		}()
 	}
 
 	_, err := d.peer.peerStorage.SaveReadyState(&rd, raftWB)
@@ -368,15 +373,20 @@ func (d *peerMsgHandler) HandleRaftReady() {
 						"[id=%d][region=%d] new peer id=%d, region=%d created during split",
 						d.PeerId(), d.regionId, newPeer.PeerId(), newRegion.Id,
 					)
-					d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: newRegion})
-					d.ctx.storeMeta.regions[newRegion.Id] = newRegion
+
+					func() {
+						d.ctx.storeMeta.Lock()
+						defer d.ctx.storeMeta.Unlock()
+						d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: newRegion})
+						d.ctx.storeMeta.regions[newRegion.Id] = newRegion
+					}()
 
 					// register region so it can start receiving message.
 					d.ctx.router.register(newPeer)
-					log.Errorf(
-						"[id=%d][region=%d] registered new peer %v",
-						d.PeerId(), d.regionId, newPeer,
-					)
+					// log.Errorf(
+					// 	"[id=%d][region=%d] registered new peer %v",
+					// 	d.PeerId(), d.regionId, newPeer,
+					// )
 					// Send a message to it to activate it?
 					d.ctx.router.send(newRegion.Id, message.Msg{RegionID: newRegion.Id, Type: message.MsgTypeStart})
 					fromPeer := util.FindPeer(newRegion, d.storeID())
@@ -399,6 +409,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 							message.NewPeerMsg(message.MsgTypeRaftMessage, newRegion.Id, triggerLeaderMsg),
 						)
 					}
+					d.sendPendingVote()
 
 					// Respond to the client that the split succeeded? Is there a need?
 					if proposal != nil {
@@ -549,6 +560,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		}
 	}
 
+	d.sendPendingVote()
 	for i := range rd.Messages {
 		if removedFromCluster && d.RaftGroup.Raft.State != raft.StateLeader {
 			// reduce sending some stale messages from removed follower
@@ -581,6 +593,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			}
 		}
 
+		if msg.MsgType == eraftpb.MessageType_MsgRequestVote || msg.MsgType == eraftpb.MessageType_MsgRequestVoteResponse {
+			log.Warnf("[store=%d][region=%d][id=%d][term=%d] sent %v to %d",
+				d.storeID(), d.regionId, d.PeerId(), msg.Term, msg.MsgType, msg.To)
+		}
 		raftMsg := &rspb.RaftMessage{
 			RegionId:    d.peer.regionId,
 			FromPeer:    fromPeer,
@@ -598,8 +614,6 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			}
 		}
 	}
-
-	d.sendPendingVote()
 
 	d.peer.RaftGroup.Advance(rd)
 
@@ -620,6 +634,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 }
 
 func (d *peerMsgHandler) sendPendingVote() {
+	d.ctx.storeMeta.Lock()
+	defer d.ctx.storeMeta.Unlock()
+
 	var remaining []*rspb.RaftMessage
 	for i := range d.ctx.storeMeta.pendingVotes {
 		msg := d.ctx.storeMeta.pendingVotes[i]
@@ -631,8 +648,8 @@ func (d *peerMsgHandler) sendPendingVote() {
 				message.NewPeerMsg(message.MsgTypeRaftMessage, msg.RegionId, msg),
 			)
 			log.Errorf(
-				"[id=%d][region=%d] send pending vote to peer %d, msg %v",
-				d.PeerId(), d.regionId, peerState.peer.Meta.Id, msg,
+				"[stored=%d][region=%d][id=%d] send pending vote to peer %d, msg %v",
+				d.storeID(), d.regionId, d.PeerId(), peerState.peer.Meta.Id, msg,
 			)
 		} else {
 			remaining = append(remaining, msg)
