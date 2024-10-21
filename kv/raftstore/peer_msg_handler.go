@@ -821,12 +821,12 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		(d.Meta.Id == msg.AdminRequest.TransferLeader.Peer.Id || d.RaftGroup.IsTransferInProgress(msg.AdminRequest.TransferLeader.Peer.Id)) {
 		// no need to emit the log. The transfer is done. Just waiting for the propose to stop.
 	} else {
-		// if msg.AdminRequest != nil {
-		log.Warnf(
-			"[store=%d][id=%d] receive propose cmd, epoch:%v, header: %v, requests: %v, admin_req: %v, index: %d",
-			d.storeID(), d.PeerId(), d.Region(), msg.Header, msg.Requests, msg.AdminRequest, nextIndex,
-		)
-		// }
+		if msg.AdminRequest != nil {
+			log.Warnf(
+				"[store=%d][id=%d] receive propose cmd, epoch:%v, header: %v, requests: %v, admin_req: %v, index: %d",
+				d.storeID(), d.PeerId(), d.Region(), msg.Header, msg.Requests, msg.AdminRequest, nextIndex,
+			)
+		}
 	}
 
 	if msg.AdminRequest != nil {

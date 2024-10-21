@@ -502,7 +502,7 @@ func (r *Raft) tick() {
 
 	if r.State == StateFollower || r.State == StateCandidate {
 		r.electionElapsed -= 1
-		log.Warningf("[store=%d][region=%d][id=%d][term=%d] r.electionElapsed: %d", r.DebugStoreID, r.DebugRegionID, r.id, r.Term, r.electionElapsed)
+		// log.Warningf("[store=%d][region=%d][id=%d][term=%d] r.electionElapsed: %d", r.DebugStoreID, r.DebugRegionID, r.id, r.Term, r.electionElapsed)
 		if r.electionElapsed == 0 {
 			// fmt.Printf("+++++[id=%d][term=%d] r.electionElapsed: %d\n", r.id, r.Term, r.electionElapsed)
 			r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
@@ -1119,8 +1119,8 @@ func (r *Raft) maybeAdvanceCommit() {
 		// }
 		// fmt.Print(toPrint)
 		log.Errorf(
-			"+++++[id=%d][term=%d] commit %d -> %d, progress(r.Prs):%+v",
-			r.id, r.Term, prevCommit, canCommit, prss)
+			"+++++[store=%d][region=%d][id=%d][term=%d] commit %d -> %d, progress(r.Prs):%+v",
+			r.DebugStoreID, r.DebugRegionID, r.id, r.Term, prevCommit, canCommit, prss)
 
 		// broadcast commit message to other peers
 		if len(r.Prs) > 1 {
@@ -1136,9 +1136,9 @@ func (r *Raft) maybeAdvanceCommit() {
 		// fmt.Print(toPrint)
 		if prss != r.lastLoggedProgress {
 			r.lastLoggedProgress = prss
-			log.Infof(
-				"[id=%d][term=%d] on leader, progress(r.Prs):%+v",
-				r.id, r.Term, prss)
+			// log.Infof(
+			// 	"[store=%d][region=%d][id=%d][term=%d] on leader, progress(r.Prs):%+v",
+			// 	r.DebugStoreID, r.DebugRegionID, r.id, r.Term, prss)
 
 		}
 	}

@@ -2,10 +2,8 @@ package raftstore
 
 import (
 	"sync"
-	"time"
 
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
-	"github.com/pingcap-incubator/tinykv/log"
 )
 
 // raftWorker is responsible for run raft commands and apply raft logs.
@@ -51,7 +49,7 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 			msgs = append(msgs, <-rw.raftCh)
 		}
 
-		now := time.Now()
+		// now := time.Now()
 		peerStateMap := make(map[uint64]*peerState)
 		for _, msg := range msgs {
 			peerState := rw.getPeerState(peerStateMap, msg.RegionID)
@@ -65,15 +63,15 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 			// 	newPeerMsgHandler(peerState.peer, rw.ctx).debugRegionLocalState()
 			// }
 		}
-		log.Errorf("[store=%d] raft worker: processed %d messages for %d peers, took %v",
-			rw.ctx.store.Id, len(msgs), len(peerStateMap), time.Since(now))
-		now = time.Now()
+		// log.Errorf("[store=%d] raft worker: processed %d messages for %d peers, took %v",
+		// 	rw.ctx.store.Id, len(msgs), len(peerStateMap), time.Since(now))
+		// now = time.Now()
 
 		for _, peerState := range peerStateMap {
 			newPeerMsgHandler(peerState.peer, rw.ctx).HandleRaftReady()
 		}
-		log.Errorf("[store=%d] raft worker: handled ready for %d peers, took %v",
-			rw.ctx.store.Id, len(peerStateMap), time.Since(now))
+		// log.Errorf("[store=%d] raft worker: handled ready for %d peers, took %v",
+		// 	rw.ctx.store.Id, len(peerStateMap), time.Since(now))
 	}
 }
 
