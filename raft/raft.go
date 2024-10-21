@@ -1151,6 +1151,10 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		r.isSoftStateChanged = true
 	}
 	r.Lead = m.From
+
+	// Append means the leader is active.
+	r.electionElapsed = r.electionTimeoutRandomized
+
 	var toPrint string
 	// toPrint += fmt.Sprintf(
 	// 	"+++++[id=%d][term=%d] follower receives append: m.Term=%d, m.Index=%d, m.LogTerm=%d, m.Commit=%d, entries: len %d\n",

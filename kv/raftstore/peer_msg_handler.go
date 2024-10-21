@@ -161,6 +161,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// 	fmt.Print(toPrint)
 	// }
 
+	timeBeforeReady := time.Now()
 	raftWB := &engine_util.WriteBatch{}
 	kvWB := &engine_util.WriteBatch{}
 	if rd.Snapshot.Metadata != nil {
@@ -203,6 +204,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	if err != nil {
 		panic("SaveReadyState returned error: %s" + err.Error())
 	}
+	timeSpentOnRaft := time.Since(timeBeforeReady)
+	timeBeforeApply := time.Now()
 
 	var toPrint string
 	postWriteFuncs := []func(){}
@@ -383,9 +386,22 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 					// register region so it can start receiving message.
 					d.ctx.router.register(newPeer)
+
+					// cnt := 0
+					// d.ctx.router.peers.Range(func(key, value interface{}) bool {
+					// 	if d.storeID() == 1 {
+					// 		peerState := value.(*peerState)
+					// 		log.Errorf(
+					// 			"[store=%d][id=%d][region=%d] (%d) region %v",
+					// 			d.storeID(), d.PeerId(), d.regionId, cnt, peerState.peer.Region(),
+					// 		)
+					// 	}
+					// 	cnt += 1
+					// 	return true
+					// })
 					// log.Errorf(
-					// 	"[id=%d][region=%d] registered new peer %v",
-					// 	d.PeerId(), d.regionId, newPeer,
+					// 	"[store=%d][id=%d][region=%d] registered new peer %v, total registered:%v",
+					// 	d.storeID(), d.PeerId(), d.regionId, newPeer.Meta.Id, cnt,
 					// )
 					// Send a message to it to activate it?
 					d.ctx.router.send(newRegion.Id, message.Msg{RegionID: newRegion.Id, Type: message.MsgTypeStart})
@@ -518,7 +534,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// can send out messages of course. If removedFromCluster is true and d is
 	// uninitialized, this peer is the last peer of the region and it's getting
 	// removed.
-	if d.isInitialized() || removedFromCluster {
+	if d.isInitialized() && (rd.Snapshot.Metadata != nil || len(rd.CommittedEntries) > 0) {
 		// Update the KVs and the apply/region at the same transaction
 		regionLocalState := new(rspb.RegionLocalState)
 		regionLocalState.State = rspb.PeerState_Normal // what if this node is removed?
@@ -559,7 +575,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			// log.Warn(toPrint)
 		}
 	}
+	timeSpentOnApply := time.Since(timeBeforeApply)
 
+	timeBeforeSend := time.Now()
 	d.sendPendingVote()
 	for i := range rd.Messages {
 		if removedFromCluster && d.RaftGroup.Raft.State != raft.StateLeader {
@@ -614,7 +632,11 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			}
 		}
 	}
-
+	timeSpentOnSend := time.Since(timeBeforeSend)
+	if false {
+		log.Errorf("[store=%d] \traft worker: peer %d, timeSpentOnRaft=%v, timeSpentOnApply=%v, timeSpentOnSend=%v",
+			d.storeID(), d.PeerId(), timeSpentOnRaft, timeSpentOnApply, timeSpentOnSend)
+	}
 	d.peer.RaftGroup.Advance(rd)
 
 	// Run these functions after the raft state (e.g. applied index) is updated.

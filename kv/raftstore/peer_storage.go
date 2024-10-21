@@ -439,8 +439,11 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready, raftWB *engine_util.Wri
 		}
 	}
 
-	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
-	raftWB.MustWriteToDB(ps.Engines.Raft)
+	if ready.Snapshot.Metadata != nil || len(ready.Entries) != 0 || ready.HardState.Term != 0 {
+		raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+		raftWB.MustWriteToDB(ps.Engines.Raft)
+	}
+
 	if raftWB.Len() != 0 {
 		toPrint += fmt.Sprintf("+++++[%s] written to Raft KV, ps.raftState:%v\n", ps.Tag, ps.raftState)
 	}
