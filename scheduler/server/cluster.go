@@ -291,7 +291,11 @@ func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 
 	// Check stale heartbeats
 	epoch := region.GetRegionEpoch()
+	if epoch == nil {
+		return errors.New(fmt.Sprintf("reject heartbeat without epoch, meta:%v, %+v", region.GetMeta(), region))
+	}
 
+	// log.Info(fmt.Sprintf("receive heartbeat, meta:%v, %+v", region.GetMeta(), region))
 	// if existingRegionInfo != nil {
 	// 	// check conf version and version
 	// 	existingEpoch := existingRegionInfo.GetRegionEpoch()
@@ -308,13 +312,17 @@ func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 	}
 	for _, info := range overlappedRegionsInfo {
 		existingEpoch := info.GetRegionEpoch()
-		if epoch.ConfVer < existingEpoch.ConfVer || epoch.Version < existingEpoch.Version {
+		log.Info(fmt.Sprintf("epoch: %v", epoch))
+		log.Info(fmt.Sprintf("existingEpoch: %v", existingEpoch))
+		if epoch.ConfVer < existingEpoch.ConfVer ||
+			epoch.Version < existingEpoch.Version {
 			// return core.NewStoreNotFoundErr(storeID)
 			return errors.New(fmt.Sprintf("heartbeat is stale, confVer %v, ver %v, found %v", epoch.ConfVer, epoch.Version, info))
 		}
 	}
 
 	// Check unnecessary heartbeats
+	// What if I skip nothing?
 	if existingRegionInfo != nil {
 		// compare with existing info
 		isNewer := region.GetRegionEpoch().ConfVer > existingRegionInfo.GetRegionEpoch().ConfVer ||
@@ -327,12 +335,18 @@ func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 		}
 	}
 
-	// What if I skip nothing?
-
 	c.core.PutRegion(region)
+	for storeID := range region.GetStoreIds() {
+		c.core.UpdateStoreStatus(
+			storeID,
+			c.core.Regions.GetStoreLeaderCount(storeID),
+			c.core.Regions.GetStoreRegionCount(storeID),
+			c.core.Regions.GetStorePendingPeerCount(storeID),
+			c.core.Regions.GetStoreLeaderRegionSize(storeID),
+			c.core.Regions.GetStoreRegionSize(storeID),
+		)
+	}
 
-	// Which test checks this?
-	// c.core.UpdateStoreStatus()
 	return nil
 }
 
