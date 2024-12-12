@@ -113,95 +113,94 @@ func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operato
 		log.Info(fmt.Sprintf("id=%d, %+v", s.GetID(), s))
 	}
 
-	for i := 0; i < len(availableStores)-1; i++ {
-		sourceStore := availableStores[i]
-		log.Warn(fmt.Sprintf("consider moving a region out of store=%d", sourceStore.GetID()))
+	sourceStore := availableStores[0]
+	log.Warn(fmt.Sprintf("consider moving a region out of store=%d", sourceStore.GetID()))
 
-		// From this biggest store
-		// 1. try to select a pending region
-		// 2. it will try to find a follower region
-		// 3. it will try to pick out one region
-		var targetRegion *core.RegionInfo
-		cluster.GetPendingRegionsWithLock(
+	// From this biggest store
+	// 1. try to select a pending region
+	// 2. it will try to find a follower region
+	// 3. it will try to pick out one region
+	var targetRegion *core.RegionInfo
+	cluster.GetPendingRegionsWithLock(
+		sourceStore.GetID(),
+		func(rc core.RegionsContainer) {
+			targetRegion = rc.RandomRegion(nil, nil)
+			if targetRegion != nil {
+				log.Warn(fmt.Sprintf("found a region with a pending peer %v on store=%d", targetRegion.GetMeta(), sourceStore.GetID()))
+			}
+		},
+	)
+
+	if targetRegion == nil {
+		// if there's no pending region, consider moving a normal region
+		cluster.GetFollowersWithLock(
 			sourceStore.GetID(),
 			func(rc core.RegionsContainer) {
 				targetRegion = rc.RandomRegion(nil, nil)
 				if targetRegion != nil {
-					log.Warn(fmt.Sprintf("found a region with a pending peer %v on store=%d", targetRegion.GetMeta(), sourceStore.GetID()))
+					log.Warn(fmt.Sprintf("found a region with a follower peer %v on store=%d", targetRegion.GetMeta(), sourceStore.GetID()))
 				}
 			},
 		)
+	}
 
-		if targetRegion == nil {
-			// if there's no pending region, consider moving a normal region
-			cluster.GetFollowersWithLock(
+	if targetRegion == nil {
+		cluster.GetLeadersWithLock(
+			sourceStore.GetID(),
+			func(rc core.RegionsContainer) {
+				targetRegion = rc.RandomRegion(nil, nil)
+				if targetRegion != nil {
+					log.Warn(fmt.Sprintf("found a region with a leader peer %v on store=%d", targetRegion.GetMeta(), sourceStore.GetID()))
+				}
+			},
+		)
+	}
+
+	if targetRegion != nil {
+		for j := len(availableStores) - 1; j > 0; j-- {
+			targetStore := availableStores[j]
+			log.Warn(fmt.Sprintf(
+				"consider moving region=%d: store=%d -> store=%d", targetRegion.GetID(), sourceStore.GetID(), targetStore.GetID(),
+			))
+
+			if peer := targetRegion.GetStorePeer(targetStore.GetID()); peer != nil {
+				// // Check if the region already exists on the store
+				log.Warn("peer existed")
+				continue
+			}
+
+			sizeDiff := sourceStore.GetRegionSize() - targetStore.GetRegionSize()
+			if targetRegion.GetApproximateSize()*2 >= sizeDiff {
+				// Any region you want to move should be smaller than half the size diff.
+				log.Warn("diff too small")
+				continue
+			}
+
+			peer, err := cluster.AllocPeer(targetStore.GetID())
+			if err != nil {
+				// Can't do anything if IDs cannot be allocated
+				log.Error(err.Error())
+				return nil
+			}
+			op, err := operator.CreateMovePeerOperator(
+				"balance-region",
+				cluster,
+				targetRegion,
+				operator.OpBalance,
 				sourceStore.GetID(),
-				func(rc core.RegionsContainer) {
-					targetRegion = rc.RandomRegion(nil, nil)
-					if targetRegion != nil {
-						log.Warn(fmt.Sprintf("found a region with a follower peer %v on store=%d", targetRegion.GetMeta(), sourceStore.GetID()))
-					}
-				},
+				targetStore.GetID(),
+				peer.Id,
 			)
-		}
-
-		if targetRegion == nil {
-			cluster.GetLeadersWithLock(
-				sourceStore.GetID(),
-				func(rc core.RegionsContainer) {
-					targetRegion = rc.RandomRegion(nil, nil)
-					if targetRegion != nil {
-						log.Warn(fmt.Sprintf("found a region with a leader peer %v on store=%d", targetRegion.GetMeta(), sourceStore.GetID()))
-					}
-				},
-			)
-		}
-
-		if targetRegion != nil {
-			for j := len(availableStores) - 1; j > i; j-- {
-				targetStore := availableStores[j]
-				log.Warn(fmt.Sprintf(
-					"consider moving region=%d: store=%d -> store=%d", targetRegion.GetID(), sourceStore.GetID(), targetStore.GetID(),
+			if err != nil {
+				log.Error(err.Error())
+			} else {
+				log.Info(fmt.Sprintf(
+					"returning operator, region=%d: store=%d -> store=%d", targetRegion.GetID(), sourceStore.GetID(), targetStore.GetID(),
 				))
-
-				if peer := targetRegion.GetStorePeer(targetStore.GetID()); peer != nil {
-					// // Check if the region already exists on the store
-					log.Warn("peer existed")
-					continue
-				}
-
-				sizeDiff := sourceStore.GetRegionSize() - targetStore.GetRegionSize()
-				if targetRegion.GetApproximateSize()*2 >= sizeDiff {
-					// Any region you want to move should be smaller than half the size diff.
-					log.Warn("diff too small")
-					continue
-				}
-
-				peer, err := cluster.AllocPeer(targetStore.GetID())
-				if err != nil {
-					// Can't do anything if IDs cannot be allocated
-					log.Error(err.Error())
-					return nil
-				}
-				op, err := operator.CreateMovePeerOperator(
-					"balance-region",
-					cluster,
-					targetRegion,
-					operator.OpBalance,
-					sourceStore.GetID(),
-					targetStore.GetID(),
-					peer.Id,
-				)
-				if err != nil {
-					log.Error(err.Error())
-				} else {
-					log.Info(fmt.Sprintf(
-						"returning operator, region=%d: store=%d -> store=%d", targetRegion.GetID(), sourceStore.GetID(), targetStore.GetID(),
-					))
-					return op
-				}
+				return op
 			}
 		}
 	}
+
 	return nil
 }

@@ -271,6 +271,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 					d.peerStorage.region.RegionEpoch.ConfVer += 1
 				}
 
+				// Isn't this necessary?
 				// d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: d.peerStorage.region})
 
 				postWriteFuncs = append(postWriteFuncs, func() {
