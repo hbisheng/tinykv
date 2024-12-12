@@ -273,7 +273,7 @@ func (c *Cluster) GetRegion(key []byte) *metapb.Region {
 			return region
 		}
 		if err != nil {
-			fmt.Printf("+++++ GetRegion err: %v, attempt %d\n", err.Error(), i)
+			// fmt.Printf("+++++ GetRegion err: %v, attempt %d\n", err.Error(), i)
 		}
 		// We may meet range gap after split, so here we will
 		// retry to get the region again.

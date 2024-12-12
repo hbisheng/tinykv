@@ -354,7 +354,7 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 			// 	engine_util.CfDefault, /* ? */
 			// 	meta.RaftLogKey(ps.region.Id, e.Index),
 			// )
-			log.Warnf("[%v] deleting raft log entry at idx=%d", ps.Tag, e.Index)
+			// log.Warnf("[%v] deleting raft log entry at idx=%d", ps.Tag, e.Index)
 		}
 	}
 

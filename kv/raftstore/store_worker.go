@@ -183,8 +183,8 @@ func (d *storeWorker) onRaftMessage(msg *rspb.RaftMessage) error {
 	if err != nil {
 		return err
 	}
-	log.Warnf("calling maybeCreatePeer, created:%v, err:%v, msg type: %v, msg from:%v msg to: %v",
-		created, err, msg.Message.MsgType, msg.Message.From, msg.Message.To)
+	// log.Warnf("calling maybeCreatePeer, created:%v, err:%v, msg type: %v, msg from:%v msg to: %v",
+	// 	created, err, msg.Message.MsgType, msg.Message.From, msg.Message.To)
 	if !created {
 		return nil
 	}
@@ -214,7 +214,9 @@ func (d *storeWorker) maybeCreatePeer(regionID uint64, msg *rspb.RaftMessage) (b
 		StartKey: msg.StartKey,
 		EndKey:   msg.EndKey,
 	}) {
-		log.Warnf("msg %s is overlapped with exist region %s", msg, region)
+		if region == nil {
+			log.Warnf("msg %s is overlapped with exist region %s", msg, region)
+		}
 		if util.IsFirstVoteMessage(msg.Message) {
 			meta.pendingVotes = append(meta.pendingVotes, msg)
 		}

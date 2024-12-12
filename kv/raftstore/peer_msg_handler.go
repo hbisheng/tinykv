@@ -165,7 +165,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	raftWB := &engine_util.WriteBatch{}
 	kvWB := &engine_util.WriteBatch{}
 	if rd.Snapshot.Metadata != nil {
-		log.Warnf("+++++[id=%d] handling snapshot: %v, rd: %+v", d.PeerId(), rd.Snapshot.Metadata, rd)
+		// log.Warnf("+++++[id=%d] handling snapshot: %v, rd: %+v", d.PeerId(), rd.Snapshot.Metadata, rd)
 
 		snapIdx := rd.Snapshot.Metadata.Index
 		// Make an assumption that snap index will be smaller than the entries and commit entries.
@@ -334,7 +334,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 						d.peerStorage.applyState.TruncatedState.Term = request.CompactTerm
 						// Raft apply state will be persisted into Raft KV later.
 
-						log.Warnf("+++++ [id=%v] post write fn: scheduled compact log job (proposal=%d) with compact idx:%d", d.Meta.Id, e.Index, request.CompactIndex)
+						// log.Warnf("+++++ [id=%v] post write fn: scheduled compact log job (proposal=%d) with compact idx:%d", d.Meta.Id, e.Index, request.CompactIndex)
 						postWriteFuncs = append(postWriteFuncs, func() {
 							// After the update to applyState.TruncatedState,
 							// peerStorage.FirstIndex() will return the latest
@@ -373,10 +373,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 						// this peer doesn't need to split
 						continue
 					}
-					log.Errorf(
-						"[id=%d][region=%d] new peer id=%d, region=%d created during split",
-						d.PeerId(), d.regionId, newPeer.PeerId(), newRegion.Id,
-					)
+					// log.Errorf(
+					// 	"[id=%d][region=%d] new peer id=%d, region=%d created during split",
+					// 	d.PeerId(), d.regionId, newPeer.PeerId(), newRegion.Id,
+					// )
 
 					func() {
 						d.ctx.storeMeta.Lock()
@@ -613,8 +613,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		}
 
 		if msg.MsgType == eraftpb.MessageType_MsgRequestVote || msg.MsgType == eraftpb.MessageType_MsgRequestVoteResponse {
-			log.Warnf("[store=%d][region=%d][id=%d][term=%d] sent %v to %d",
-				d.storeID(), d.regionId, d.PeerId(), msg.Term, msg.MsgType, msg.To)
+			// log.Warnf("[store=%d][region=%d][id=%d][term=%d] sent %v to %d",
+			// 	d.storeID(), d.regionId, d.PeerId(), msg.Term, msg.MsgType, msg.To)
 		}
 		raftMsg := &rspb.RaftMessage{
 			RegionId:    d.peer.regionId,
@@ -670,10 +670,10 @@ func (d *peerMsgHandler) sendPendingVote() {
 				msg.RegionId,
 				message.NewPeerMsg(message.MsgTypeRaftMessage, msg.RegionId, msg),
 			)
-			log.Errorf(
-				"[stored=%d][region=%d][id=%d] send pending vote to peer %d, msg %v",
-				d.storeID(), d.regionId, d.PeerId(), peerState.peer.Meta.Id, msg,
-			)
+			// log.Errorf(
+			// 	"[stored=%d][region=%d][id=%d] send pending vote to peer %d, msg %v",
+			// 	d.storeID(), d.regionId, d.PeerId(), peerState.peer.Meta.Id, msg,
+			// )
 		} else {
 			remaining = append(remaining, msg)
 		}
@@ -823,10 +823,10 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		// no need to emit the log. The transfer is done. Just waiting for the propose to stop.
 	} else {
 		if msg.AdminRequest != nil {
-			log.Warnf(
-				"[store=%d][id=%d] receive propose cmd, epoch:%v, header: %v, requests: %v, admin_req: %v, index: %d",
-				d.storeID(), d.PeerId(), d.Region(), msg.Header, msg.Requests, msg.AdminRequest, nextIndex,
-			)
+			// log.Warnf(
+			// 	"[store=%d][id=%d] receive propose cmd, epoch:%v, header: %v, requests: %v, admin_req: %v, index: %d",
+			// 	d.storeID(), d.PeerId(), d.Region(), msg.Header, msg.Requests, msg.AdminRequest, nextIndex,
+			// )
 		}
 	}
 
@@ -865,7 +865,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 					}
 				}
 
-				log.Errorf("[id=%d] transferring leader to %d because I'm being removed", d.Meta.Id, maxProgressPeer)
+				// log.Errorf("[id=%d] transferring leader to %d because I'm being removed", d.Meta.Id, maxProgressPeer)
 				d.RaftGroup.TransferLeader(maxProgressPeer)
 				return
 			}
@@ -1120,7 +1120,7 @@ func handleStaleMsg(trans Transport, msg *rspb.RaftMessage, curEpoch *metapb.Reg
 	if !needGC {
 		log.Infof("[region %d] raft message %s is stale, current %v ignore it",
 			regionID, msgType, curEpoch)
-		log.Infof("[region %d] +++++ raft message %v", regionID, msg)
+		// log.Infof("[region %d] +++++ raft message %v", regionID, msg)
 		return
 	}
 	gcMsg := &rspb.RaftMessage{

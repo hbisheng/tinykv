@@ -258,7 +258,7 @@ func (l *RaftLog) appendEntries(m pb.Message) {
 		}
 	}
 	if len(toPrint) > 0 {
-		fmt.Print(toPrint)
+		// fmt.Print(toPrint)
 	}
 }
 

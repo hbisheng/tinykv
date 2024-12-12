@@ -304,8 +304,8 @@ func (r *Raft) sendAppend(to uint64) bool {
 		snap, err := r.RaftLog.storage.Snapshot()
 		if err != nil {
 			if errors.Is(err, ErrSnapshotTemporarilyUnavailable) {
-				fmt.Printf("+++++[id=%d][term=%d] generating snap for id=%d (next=%d,match=%d) latestSnapIndex=%d, not available yet\n",
-					r.id, r.Term, to, r.Prs[to].Next, r.Prs[to].Match, r.RaftLog.latestSnapIndex)
+				// fmt.Printf("+++++[id=%d][term=%d] generating snap for id=%d (next=%d,match=%d) latestSnapIndex=%d, not available yet\n",
+				// 	r.id, r.Term, to, r.Prs[to].Next, r.Prs[to].Match, r.RaftLog.latestSnapIndex)
 				return false
 			} else {
 				// fmt.Printf("Error type: %T, value: %+v, addr: %p\n", err, err, err)
@@ -339,8 +339,8 @@ func (r *Raft) sendAppend(to uint64) bool {
 			Snapshot: &snap,
 		})
 
-		fmt.Printf("+++++[id=%d][term=%d] sending snap %v to %d (next=%d,match=%d) latestSnapIndex=%d\n",
-			r.id, r.Term, snap, to, r.Prs[to].Next, r.Prs[to].Match, r.RaftLog.latestSnapIndex)
+		// fmt.Printf("+++++[id=%d][term=%d] sending snap %v to %d (next=%d,match=%d) latestSnapIndex=%d\n",
+		// r.id, r.Term, snap, to, r.Prs[to].Next, r.Prs[to].Match, r.RaftLog.latestSnapIndex)
 		return true
 	}
 
@@ -513,7 +513,7 @@ func (r *Raft) tick() {
 
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
-	fmt.Printf("+++++[id=%d][term=%d] become follower, lead %d\n", r.id, term, lead)
+	// fmt.Printf("+++++[id=%d][term=%d] become follower, lead %d\n", r.id, term, lead)
 	// Your Code Here (2A).
 	r.Lead = lead
 	r.Term = term
@@ -547,16 +547,16 @@ func (r *Raft) becomeCandidate() {
 
 	// fmt.Printf("+++++[id=%d] become candidate at term %d, rand timeout %d, r.Prs: %v\n", r.id, r.Term, r.electionElapsed, r.Prs)
 
-	log.Warningf("[store=%d][region=%d][id=%d] become candidate at term %d, rand timeout %d, r.Prs: %v",
-		r.DebugStoreID, r.DebugRegionID, r.id, r.Term, r.electionElapsed, r.progressStr())
+	// log.Warningf("[store=%d][region=%d][id=%d] become candidate at term %d, rand timeout %d, r.Prs: %v",
+	// r.DebugStoreID, r.DebugRegionID, r.id, r.Term, r.electionElapsed, r.progressStr())
 
 	// r.startNewElection()
 }
 
 func (r *Raft) startNewElection() {
 	// fmt.Printf("+++++[id=%d][term=%d] startNewElection\n", r.id, r.Term)
-	log.Warningf("[store=%d][region=%d][id=%d][term=%d] startNewElection, r.Prs: %v",
-		r.DebugStoreID, r.DebugRegionID, r.id, r.Term, r.progressStr())
+	// log.Warningf("[store=%d][region=%d][id=%d][term=%d] startNewElection, r.Prs: %v",
+	// 	r.DebugStoreID, r.DebugRegionID, r.id, r.Term, r.progressStr())
 	// r.Term += 1
 
 	// Vote for itself.
@@ -581,8 +581,8 @@ func (r *Raft) becomeLeader() {
 
 	// r.Term += 1
 	// fmt.Printf("+++++[id=%d] BECOME LEADER at term %d, proposing noop entry\n", r.id, r.Term)
-	log.Warningf("[store=%d][region=%d][id=%d][term=%d] become leader, rand timeout %d, r.Prs: %v",
-		r.DebugStoreID, r.DebugRegionID, r.id, r.Term, r.electionElapsed, r.progressStr())
+	// log.Warningf("[store=%d][region=%d][id=%d][term=%d] become leader, rand timeout %d, r.Prs: %v",
+	// 	r.DebugStoreID, r.DebugRegionID, r.id, r.Term, r.electionElapsed, r.progressStr())
 
 	r.isSoftStateChanged = true
 	r.State = StateLeader
@@ -631,9 +631,9 @@ func (r *Raft) Step(m pb.Message) error {
 	// }
 
 	if fi, err := r.RaftLog.storage.FirstIndex(); err == nil && r.RaftLog.latestSnapIndex+1 < fi {
-		log.Warnf(
-			"[id=%d][term=%d] detected storage fi change, calling CompactLog, compact idx:%d, latestSnapIdx: %d, last idx: %d, committed:%d, applied:%v",
-			r.id, r.Term, fi-1, r.RaftLog.latestSnapIndex, r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.applied)
+		// log.Warnf(
+		// 	"[id=%d][term=%d] detected storage fi change, calling CompactLog, compact idx:%d, latestSnapIdx: %d, last idx: %d, committed:%d, applied:%v",
+		// 	r.id, r.Term, fi-1, r.RaftLog.latestSnapIndex, r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.applied)
 		r.RaftLog.maybeCompact(fi - 1)
 	}
 
@@ -645,7 +645,7 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	incomingTerm := m.Term
 	if incomingTerm > r.Term {
-		fmt.Printf("+++++[id=%d][term=%d] incoming term=%d from id=%d is higher\n", r.id, r.Term, m.Term, m.From)
+		// fmt.Printf("+++++[id=%d][term=%d] incoming term=%d from id=%d is higher\n", r.id, r.Term, m.Term, m.From)
 		r.isHardStateChanged = true
 		r.becomeFollower(m.Term, None)
 	} else if incomingTerm < r.Term {
@@ -656,7 +656,7 @@ func (r *Raft) Step(m pb.Message) error {
 			// let local messages pass
 		} else {
 			// ignore messages with smaller terms
-			fmt.Printf("+++++[id=%d][term=%d] ingore message %v from id=%d term=%d\n", r.id, r.Term, m.MsgType, m.From, m.Term)
+			// fmt.Printf("+++++[id=%d][term=%d] ingore message %v from id=%d term=%d\n", r.id, r.Term, m.MsgType, m.From, m.Term)
 			return nil
 		}
 	}
@@ -675,7 +675,7 @@ func (r *Raft) Step(m pb.Message) error {
 		// 	r.Vote,
 		// )
 
-		prevVote := r.Vote
+		// prevVote := r.Vote
 		if r.Vote == None && isUpToDate(m.Index, m.LogTerm, r.RaftLog.LastIndex(), r.RaftLog.mustTerm(r.RaftLog.LastIndex())) {
 			r.Vote = m.From
 			r.isHardStateChanged = true
@@ -696,15 +696,15 @@ func (r *Raft) Step(m pb.Message) error {
 				// 	r.id, r.Term, m.From, m.Term,
 				// )
 
-				log.Warnf(
-					"[store=%d][region=%v][id=%d][term=%d] received vote request from %d at term %d, REJECTED because not up-to-date, m.Index:%v, m.LogTerm: %v, mine: %v, term %v!",
-					r.DebugStoreID, r.DebugRegionID, r.id, r.Term, m.From, m.Term, m.Index, m.LogTerm, r.RaftLog.LastIndex(), r.RaftLog.mustTerm(r.RaftLog.LastIndex()),
-				)
+				// log.Warnf(
+				// 	"[store=%d][region=%v][id=%d][term=%d] received vote request from %d at term %d, REJECTED because not up-to-date, m.Index:%v, m.LogTerm: %v, mine: %v, term %v!",
+				// 	r.DebugStoreID, r.DebugRegionID, r.id, r.Term, m.From, m.Term, m.Index, m.LogTerm, r.RaftLog.LastIndex(), r.RaftLog.mustTerm(r.RaftLog.LastIndex()),
+				// )
 			} else {
-				log.Warnf(
-					"[store=%d][region=%v][id=%d][term=%d] received vote request from %d at term %d, REJECTED! my vote: %d",
-					r.DebugStoreID, r.DebugRegionID, r.id, r.Term, m.From, m.Term, prevVote,
-				)
+				// log.Warnf(
+				// 	"[store=%d][region=%v][id=%d][term=%d] received vote request from %d at term %d, REJECTED! my vote: %d",
+				// 	r.DebugStoreID, r.DebugRegionID, r.id, r.Term, m.From, m.Term, prevVote,
+				// )
 
 				// fmt.Printf(
 				// 	"+++++[id=%d][term=%d] received vote request from %d at term %d, REJECTED! my vote: %d\n",
@@ -712,10 +712,10 @@ func (r *Raft) Step(m pb.Message) error {
 				// )
 			}
 		} else {
-			log.Warnf(
-				"[store=%v][region=%v][id=%d][term=%d] received vote request from %d at term %d, GRANTED",
-				r.DebugStoreID, r.DebugRegionID, r.id, r.Term, m.From, m.Term,
-			)
+			// log.Warnf(
+			// 	"[store=%v][region=%v][id=%d][term=%d] received vote request from %d at term %d, GRANTED",
+			// 	r.DebugStoreID, r.DebugRegionID, r.id, r.Term, m.From, m.Term,
+			// )
 
 			// fmt.Printf(
 			// 	"+++++[id=%d][term=%d] received vote request from %d at term %d, GRANTED\n",
@@ -731,7 +731,7 @@ func (r *Raft) Step(m pb.Message) error {
 		// 	log.Errorf("[id=%d] don't do election", r.id)
 		// 	return nil
 		// }
-		fmt.Printf("+++++[id=%d][term=%d] : %v\n", r.id, r.Term, m)
+		// fmt.Printf("+++++[id=%d][term=%d] : %v\n", r.id, r.Term, m)
 		r.becomeCandidate()
 		r.startNewElection()
 		return nil
@@ -762,7 +762,7 @@ func isUpToDate(index, term, myIndex, myTerm uint64) bool {
 func (r *Raft) stepCandidate(m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgRequestVoteResponse:
-		fmt.Printf("+++++[id=%d][term=%d] receive vote from %d: accept=%v\n", r.id, r.Term, m.From, !m.Reject)
+		// fmt.Printf("+++++[id=%d][term=%d] receive vote from %d: accept=%v\n", r.id, r.Term, m.From, !m.Reject)
 		if !m.Reject {
 			r.votes[m.From] = true
 		} else {
@@ -773,7 +773,7 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 			if result {
 				r.becomeLeader()
 			} else {
-				fmt.Printf("+++++[id=%d][term=%d] losing the election, r.votes: %v\n", r.id, r.Term, r.votes)
+				// fmt.Printf("+++++[id=%d][term=%d] losing the election, r.votes: %v\n", r.id, r.Term, r.votes)
 				// keep your vote, don't vote again.
 				myVote := r.Vote
 				r.becomeFollower(r.Term, None)
@@ -830,7 +830,7 @@ func (r *Raft) stepFollower(m pb.Message) error {
 			return nil
 		}
 
-		fmt.Printf("+++++[id=%d][term=%d] (leader transfer) leader sent me %v, electing for leader\n", r.id, r.Term, m.MsgType)
+		// fmt.Printf("+++++[id=%d][term=%d] (leader transfer) leader sent me %v, electing for leader\n", r.id, r.Term, m.MsgType)
 		r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
 	case pb.MessageType_MsgTransferLeader:
 		// Forward to leader
@@ -848,7 +848,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 	var toPrint string
 	switch m.MsgType {
 	case pb.MessageType_MsgBeat:
-		fmt.Print("+++++broadcasting heartbeat due to beat msg\n")
+		// fmt.Print("+++++broadcasting heartbeat due to beat msg\n")
 		r.broadcastHeartbeat()
 	case pb.MessageType_MsgTransferLeader:
 		// Corner case: the target doesn't exist
@@ -1118,9 +1118,9 @@ func (r *Raft) maybeAdvanceCommit() {
 		// 	}
 		// }
 		// fmt.Print(toPrint)
-		log.Errorf(
-			"+++++[store=%d][region=%d][id=%d][term=%d] commit %d -> %d, progress(r.Prs):%+v",
-			r.DebugStoreID, r.DebugRegionID, r.id, r.Term, prevCommit, canCommit, prss)
+		// log.Errorf(
+		// 	"+++++[store=%d][region=%d][id=%d][term=%d] commit %d -> %d, progress(r.Prs):%+v",
+		// 	r.DebugStoreID, r.DebugRegionID, r.id, r.Term, prevCommit, canCommit, prss)
 
 		// broadcast commit message to other peers
 		if len(r.Prs) > 1 {
@@ -1279,15 +1279,15 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	snapIndex := m.Snapshot.Metadata.Index
 	snapTerm := m.Snapshot.Metadata.Term
 	if snapIndex <= r.RaftLog.committed {
-		fmt.Printf("+++++[id=%d][term=%d] ignore stale snapshot, snap index:%d, snap term=%d, my committed:%d\n",
-			r.id, r.Term, snapIndex, snapTerm, r.RaftLog.committed)
+		// fmt.Printf("+++++[id=%d][term=%d] ignore stale snapshot, snap index:%d, snap term=%d, my committed:%d\n",
+		// 	r.id, r.Term, snapIndex, snapTerm, r.RaftLog.committed)
 		return
 	}
 
-	fmt.Printf("+++++[id=%d][term=%d] restored snapshot, snap index:%d, snap term=%d, prev committed:%d, prev applied:%d, prev stabled:%d\n",
-		r.id, r.Term, snapIndex, snapTerm,
-		r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.stabled,
-	)
+	// fmt.Printf("+++++[id=%d][term=%d] restored snapshot, snap index:%d, snap term=%d, prev committed:%d, prev applied:%d, prev stabled:%d\n",
+	// 	r.id, r.Term, snapIndex, snapTerm,
+	// 	r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.stabled,
+	// )
 	// r.Term = snapTerm
 
 	if r.Lead != m.From {

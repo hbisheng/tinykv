@@ -39,7 +39,7 @@ func NewMockTransport() *MockTransport {
 func (t *MockTransport) AddStore(storeID uint64, raftRouter message.RaftRouter, snapMgr *snap.SnapManager) {
 	t.Lock()
 	defer t.Unlock()
-	log.Warnf("AddStore, storeID:%d raftRouter:%v", storeID, raftRouter)
+	// log.Warnf("AddStore, storeID:%d raftRouter:%v", storeID, raftRouter)
 	t.routers[storeID] = raftRouter
 	t.snapMgrs[storeID] = snapMgr
 }

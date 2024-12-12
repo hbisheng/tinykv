@@ -163,7 +163,7 @@ func (bs *Raftstore) loadPeers() ([]*peer, error) {
 				bs.clearStaleMeta(kvWB, raftWB, localState)
 				continue
 			}
-			log.Errorf("calling loadPeers -> createPeer, RegionLocalState: %v", localState)
+			// log.Errorf("calling loadPeers -> createPeer, RegionLocalState: %v", localState)
 			peer, err := createPeer(storeID, ctx.cfg, ctx.regionTaskSender, ctx.engine, region)
 			if err != nil {
 				return err
@@ -264,11 +264,11 @@ func (bs *Raftstore) start(
 	if err != nil {
 		return err
 	}
-	log.Warnf("bs.loadPeers() -> regionPeers: %v", regionPeers)
+	// log.Warnf("bs.loadPeers() -> regionPeers: %v", regionPeers)
 
 	for _, peer := range regionPeers {
 		bs.router.register(peer)
-		log.Warnf("bs.router register, peerSender: %v, peer: %v", bs.router.peerSender, peer)
+		// log.Warnf("bs.router register, peerSender: %v, peer: %v", bs.router.peerSender, peer)
 	}
 	bs.startWorkers(regionPeers)
 	return nil
