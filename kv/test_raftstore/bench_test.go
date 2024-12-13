@@ -1,3 +1,4 @@
+
 package test_raftstore
 
 import (
@@ -25,7 +26,7 @@ func TestReadWrite(t *testing.T) {
 	time.Sleep(2 * electionTimeout)
 
 	nclients := 16
-	ch_tasks := make(chan int, 1000)
+	chTasks := make(chan int, 1000)
 	clnts := make([]chan bool, nclients)
 	for i := 0; i < nclients; i++ {
 		clnts[i] = make(chan bool, 1)
@@ -34,7 +35,7 @@ func TestReadWrite(t *testing.T) {
 				clnts[cli] <- true
 			}()
 			for {
-				j, more := <-ch_tasks
+				j, more := <-chTasks
 				if more {
 					key := fmt.Sprintf("%02d%08d", cli, j)
 					value := "x " + strconv.Itoa(j) + " y"
@@ -53,22 +54,30 @@ func TestReadWrite(t *testing.T) {
 	}
 
 	start := time.Now()
-	for i := 0; i < 100000; i++ {
-		processed := i - 1 - len(ch_tasks)
-		if processed > 0 {
-			elasped := time.Since(start)
-			t.Logf("i=%v, len(ch_tasks): %v, Time: %v, QPS: %v",
-				i, elasped, len(ch_tasks), float64(processed)/elasped.Seconds())
+	duration := 3 * time.Minute
+	totalRequests := 0
+	ticker := time.NewTicker(1 * time.Second)
+	for {
+		select {
+		case <-ticker.C:
+			elapsed := time.Since(start)
+			if elapsed >= duration {
+				close(chTasks)
+				for cli := 0; cli < nclients; cli++ {
+					ok := <-clnts[cli]
+					if !ok {
+						t.Fatalf("failure")
+					}
+				}
+				ticker.Stop()
+				totalDuration := time.Since(start)
+				t.Logf("Total Duration: %v, Total Requests: %v", totalDuration, totalRequests)
+				t.Logf("QPS: %v", float64(totalRequests)/totalDuration.Seconds())
+				return
+			}
+		case chTasks <- totalRequests:
+			totalRequests++
 		}
-		ch_tasks <- i
 	}
-	close(ch_tasks)
-	for cli := 0; cli < nclients; cli++ {
-		ok := <-clnts[cli]
-		if ok == false {
-			t.Fatalf("failure")
-		}
-	}
-	elasped := time.Since(start)
-	t.Logf("Time: %v, QPS: %v", elasped, 100000/elasped.Seconds())
 }
+

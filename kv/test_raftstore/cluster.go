@@ -62,6 +62,7 @@ func (c *Cluster) Start() {
 		if err != nil {
 			panic(err)
 		}
+		log.Warn(fmt.Sprintf("dbPath is %v", dbPath))
 		c.dbPaths[storeID] = dbPath
 		kvPath := filepath.Join(dbPath, "kv")
 		raftPath := filepath.Join(dbPath, "raft")
