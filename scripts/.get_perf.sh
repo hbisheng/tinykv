@@ -56,7 +56,7 @@ func TestReadWrite(t *testing.T) {
         }
 
         start := time.Now()
-        for i := 0; i < 10000; i++ {
+        for i := 0; i < 100000; i++ {
                 ch_tasks <- i
         }
        close(ch_tasks)
@@ -67,12 +67,12 @@ func TestReadWrite(t *testing.T) {
                 }
         }
         elasped := time.Since(start)
-        t.Logf("QPS: %v", 10000 / elasped.Seconds())
+        t.Logf("QPS: %v", 100000 / elasped.Seconds())
 }
 '
 
 echo "$bench_file" > kv/test_raftstore/bench_test.go
-go test ./kv/test_raftstore/ -run ReadWrite -v > bench.log
+go test ./kv/test_raftstore/ -run ReadWrite -v -count=1 > bench.log
 score=$(grep QPS: bench.log | awk '{print $3}')
 rm bench.log
 
@@ -80,6 +80,8 @@ if [ -z "$score" ]
 then
   score=0
 fi
+
+echo $score
 
 if [ $(expr $score \> 1000) ]; then
 echo "PASS"
