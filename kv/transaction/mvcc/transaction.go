@@ -190,7 +190,7 @@ func (txn *MvccTxn) CurrentWrite(key []byte) (*Write, uint64, error) {
 		}
 
 		commitTS := decodeTimestamp(item.Key())
-		if commitTS <= txn.StartTS {
+		if commitTS < txn.StartTS {
 			break
 		}
 
@@ -204,9 +204,9 @@ func (txn *MvccTxn) CurrentWrite(key []byte) (*Write, uint64, error) {
 			return nil, 0, err
 		}
 
-		if write.Kind != WriteKindPut {
-			break
-		}
+		// if write.Kind != WriteKindPut {
+		// 	break
+		// }
 
 		if write.StartTS == txn.StartTS {
 			return write, commitTS, nil

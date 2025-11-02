@@ -225,12 +225,144 @@ func (server *Server) KvScan(_ context.Context, req *kvrpcpb.ScanRequest) (*kvrp
 
 func (server *Server) KvCheckTxnStatus(_ context.Context, req *kvrpcpb.CheckTxnStatusRequest) (*kvrpcpb.CheckTxnStatusResponse, error) {
 	// Your Code Here (4C).
-	return nil, nil
+
+	reader, err := server.storage.Reader(req.Context)
+	if err != nil {
+		return nil, err
+	}
+
+	mvccTxn := mvcc.NewMvccTxn(reader, req.LockTs)
+	// Find the lock
+	lock, err := mvccTxn.GetLock(req.PrimaryKey)
+	if err != nil {
+		return nil, err
+	}
+
+	key := req.PrimaryKey
+	var action kvrpcpb.Action
+	if lock != nil && lock.Ts == req.LockTs {
+		// lock found, check TTL. Rollback if needed.
+
+		println("lock.Ts:", mvcc.PhysicalTime(req.LockTs), lock.Ttl, mvcc.PhysicalTime(req.CurrentTs))
+		if mvcc.PhysicalTime(req.LockTs)+lock.Ttl < mvcc.PhysicalTime(req.CurrentTs) {
+			// rollback
+			mvccTxn.DeleteLock(key)
+			mvccTxn.DeleteValue(key)
+			mvccTxn.PutWrite(key, req.LockTs, &mvcc.Write{
+				StartTS: req.LockTs,
+				Kind:    mvcc.WriteKindRollback,
+			})
+			action = kvrpcpb.Action_TTLExpireRollback
+		} else {
+			// return lock ttl
+			action = kvrpcpb.Action_NoAction
+		}
+	} else {
+
+		if lock == nil {
+			println("lock not found at req.LockTs")
+		} else {
+			println("lock with incorrect TS")
+		}
+
+		// lock not found, check outcome
+		write, commitTS, err := mvccTxn.CurrentWrite(req.PrimaryKey)
+		if err != nil {
+			return nil, err
+		}
+
+		if write != nil {
+			if write.Kind == mvcc.WriteKindRollback {
+				commitTS = 0
+			}
+
+			return &kvrpcpb.CheckTxnStatusResponse{
+				CommitVersion: commitTS,
+				Action:        action,
+			}, nil
+		}
+
+		println("lock not found, write not found, rollback")
+		// lock not found, write not found, rollback
+		mvccTxn.PutWrite(key, req.LockTs, &mvcc.Write{
+			StartTS: req.LockTs,
+			Kind:    mvcc.WriteKindRollback,
+		})
+		action = kvrpcpb.Action_LockNotExistRollback
+	}
+
+	if err := server.storage.Write(req.Context, mvccTxn.Writes()); err != nil {
+		return nil, err
+	}
+	return &kvrpcpb.CheckTxnStatusResponse{
+		Action: action,
+	}, nil
 }
 
 func (server *Server) KvBatchRollback(_ context.Context, req *kvrpcpb.BatchRollbackRequest) (*kvrpcpb.BatchRollbackResponse, error) {
 	// Your Code Here (4C).
-	return nil, nil
+
+	reader, err := server.storage.Reader(req.Context)
+	if err != nil {
+		return nil, err
+	}
+
+	mvccTxn := mvcc.NewMvccTxn(reader, req.StartVersion)
+	// Find the lock
+	for _, key := range req.Keys {
+		lock, err := mvccTxn.GetLock(key)
+		if err != nil {
+			return nil, err
+		}
+
+		if lock == nil {
+			write, _, err := mvccTxn.MostRecentWrite(key)
+			if err != nil {
+				return nil, err
+			}
+
+			if write != nil && write.StartTS == req.StartVersion {
+				if write.Kind == mvcc.WriteKindRollback {
+					// already rolled back -> return success
+					return &kvrpcpb.BatchRollbackResponse{}, nil
+				} else if write.Kind == mvcc.WriteKindPut {
+					// no lock, but duplicate commit -> return failure
+					return &kvrpcpb.BatchRollbackResponse{
+						Error: &kvrpcpb.KeyError{
+							Abort: "already committed",
+						},
+					}, nil
+				}
+			}
+
+			// lock not found
+			mvccTxn.PutWrite(key, req.StartVersion, &mvcc.Write{
+				StartTS: req.StartVersion,
+				Kind:    mvcc.WriteKindRollback,
+			})
+			continue
+		}
+
+		if lock.Ts != req.StartVersion {
+			mvccTxn.PutWrite(key, req.StartVersion, &mvcc.Write{
+				StartTS: req.StartVersion,
+				Kind:    mvcc.WriteKindRollback,
+			})
+			continue
+		}
+
+		mvccTxn.DeleteLock(key)
+		mvccTxn.DeleteValue(key)
+		mvccTxn.PutWrite(key, req.StartVersion, &mvcc.Write{
+			StartTS: req.StartVersion,
+			Kind:    mvcc.WriteKindRollback,
+		})
+	}
+
+	if err := server.storage.Write(req.Context, mvccTxn.Writes()); err != nil {
+		return nil, err
+	}
+	return &kvrpcpb.BatchRollbackResponse{}, nil
 }
 
 func (server *Server) KvResolveLock(_ context.Context, req *kvrpcpb.ResolveLockRequest) (*kvrpcpb.ResolveLockResponse, error) {
